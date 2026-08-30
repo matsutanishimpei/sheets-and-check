@@ -1,45 +1,93 @@
-# Realtime Authorization setup
+# Realtime Authorization・本番設定
 
-コード側はSupabase RealtimeへカスタムJWTを `realtime.setAuth()` で設定し、すべてのChannelを `private: true` で作成します。次の外部設定が終わるまでは、Realtime Authorizationの導入は完了していません。
+このアプリは単一のWorker管理Supabase Projectを使用します。各Teacherが任意のProjectを持ち込む構成ではありません。コードのデプロイだけではPrivate Channel認可は完成しないため、以下の外部作業を本番merge前に行ってください。値の実物をGit、Markdown、Issue、ログへ記載しないでください。
 
-## 必須の外部作業
+## 1. Supabase Project
 
-1. Workerが利用するSupabase ProjectのSQL EditorまたはMigrationパイプラインで [`supabase/migrations/202608300001_realtime_authorization.sql`](../supabase/migrations/202608300001_realtime_authorization.sql) を適用する。
-2. Supabase Dashboardの **Realtime Settings** で **Allow public access** を無効にする。
-3. Cloudflare Worker Secretへ次を設定する。値はコミットしない。
-   - `JWT_SECRET`: 十分に長いアプリ認証用ランダム値
-   - `SUPABASE_JWT_SECRET`: 対象ProjectのJWT検証Secretと一致する値
-   - `SUPABASE_URL`: 対象ProjectのHTTPS URL
-   - `SUPABASE_SERVICE_ROLE_KEY`: 学生イベント中継専用のサーバー側キー
-   - `INITIAL_TEACHER_USERNAME` / `INITIAL_TEACHER_PASSWORD`: Teacherが0件の初回だけ必要。既知の開発値は禁止
-4. `ALLOWED_ORIGINS` を正式なPages Originのカンマ区切りにする。Preview URLを包括許可しない。
-5. 各Roomへ保存するSupabase URLをWorkerの `SUPABASE_URL` と一致させる。
+1. 対象となる単一Supabase Projectを用意する。
+2. SQL Editorまたは管理されたmigration手段で [`supabase/migrations/202608300001_realtime_authorization.sql`](../supabase/migrations/202608300001_realtime_authorization.sql) を適用する。
+3. `realtime.messages` に次のRLS Policyが存在し、有効であることを確認する。
+   - Teacher: `room:%` のSELECT、`room:%` かつ `:teacher` で終わらないTopicへのINSERT
+   - Student: JWT `roomId` と完全一致する `room:<roomId>` のSELECTのみ
+   - StudentのBroadcast INSERTおよび `room:<roomId>:teacher` のSELECTは許可しない
+4. Supabase Dashboardの **Realtime Settings** で **Allow public access** をOFFにする。
+5. Project URL、legacy anon key、legacy service role key、legacy JWT secretを取得する。現行コードではこれらを使用する。
 
-`SUPABASE_SERVICE_ROLE_KEY` はブラウザへ返さず、Worker Secretだけに保存してください。
+公式資料: [Realtime Authorization](https://supabase.com/docs/guides/realtime/authorization)、[Realtime Settings](https://supabase.com/docs/guides/realtime/settings)、[API keys](https://supabase.com/docs/guides/getting-started/api-keys)。Realtime AuthorizationはChannel join時にPolicyを評価・キャッシュするため、Policyやclaim変更後はChannelを再接続して検証します。
 
-## 権限モデル
+`service_role` keyとJWT secretはブラウザ用設定ではありません。Roomへ保存するのはProject URLと公開anon keyだけです。
 
-| Principal | Topic | Receive | Send |
-|---|---|---|---|
-| Student | `room:<JWT roomId>` | Teacher制御イベント | 直接送信不可 |
-| Student | 他Room / `room:<id>:teacher` | 不可 | 不可 |
-| Teacher | `room:<roomId>` | 可 | Teacher制御イベント |
-| Teacher | `room:<roomId>:teacher` | Student回答 | 不要 |
-| Worker service role | `room:<roomId>:teacher` | 不要 | `student_to_teacher` のみ |
+## 2. Cloudflare Worker
 
-学生回答は `POST /api/rooms/:id/student-event` が学生JWTを検証し、`studentId` と氏名をclaimから付与してTeacher専用Topicへ中継します。学生は `realtime.messages` のINSERT権限を持たないため、`teacher_reset` 等を直接送れません。
+`packages/backend` から `npx wrangler secret put <NAME>` 等でproductionへ設定します。Project URLやOriginは秘密情報ではありませんが、環境別設定としてDashboardまたはWranglerで管理し、実値を資料へ直書きしない運用を推奨します。
 
-自動テストでは、同一 `CF-Connecting-IP` から50件の有効な学生JWTをほぼ同時に回答中継APIへ送り、全件が429なしで受理されること、送信先Topicが同一Roomに固定されること、各イベントの学生ID・氏名がJWT claim由来であることを確認します。実Supabaseへの到達とTeacherブラウザでの受信は、次の手動検証も必要です。
+| Name | 必要時期 | 用途・注意 |
+| --- | --- | --- |
+| `JWT_SECRET` | 常時必須 | アプリ用Teacher JWT署名。十分長いランダム値。開発既知値は禁止 |
+| `SUPABASE_JWT_SECRET` | 常時必須 | 現行legacy Supabase JWT署名。Supabase Projectと一致させる |
+| `SUPABASE_URL` | 常時必須 | 単一Project URL。Room POST/PUTとrelayがfail closedで照合 |
+| `SUPABASE_SERVICE_ROLE_KEY` | 常時必須 | WorkerからREST Broadcastするためだけに使用。ブラウザ・D1・Gitへ置かない |
+| `ALLOWED_ORIGINS` | 常時必須 | 正式なPages Originのみ。複数時はカンマ区切り。末尾 `/` を付けない |
+| `INITIAL_TEACHER_USERNAME` | 初回bootstrapのみ | Teacherが0件のときだけ使用。初期作成確認後は削除可 |
+| `INITIAL_TEACHER_PASSWORD` | 初回bootstrapのみ | 強い一時値。`admin123` はproductionで拒否。初期作成後は削除可 |
 
-## 手動検証
+`ENVIRONMENT=production` は `wrangler.toml` に設定済みです。明示的な `development` / `test` 以外はfail-closed modeなので、bindingが欠落・未知値でも開発fallbackへ倒れません。`JWT_SECRET` / `SUPABASE_JWT_SECRET` が未設定または開発既知値ならToken発行を拒否します。`SUPABASE_URL` が未設定ならRoom保存を503で拒否し、異なるProject URLなら400で拒否します。比較は前後空白と任意個の末尾 `/` を除去します。
 
-自動テストはJWT境界、Private Channel生成順序、claim由来の本人情報、他Room拒否、学生のTeacherイベント混入拒否を検証します。外部ProjectへPolicy適用後、次も確認してください。
+## 3. Room設定
 
-1. TeacherでRoomを開き、Studentが同じRoomへチェックインして回答できる。
-2. Teacherの `teacher_reset`、`student_evicted`、`teacher_lock_state`、`room_layout_updated` をStudentが受信できる。
-3. Student JWTで他Roomおよび `room:<id>:teacher` のjoinが拒否される。
-4. Student JWTによるRealtimeの直接Broadcast INSERTが拒否される。
-5. Teacher JWTでTeacher制御イベントが送信できる。
-6. 無効・期限切れJWTでPrivate Channel joinが拒否される。
+Teacher画面で、上記の単一Projectと同じProject URLおよびその公開anon keyをRoomへ保存します。production APIがProject一致を強制します。`service_role` keyを入力してはいけません。
 
-Realtimeは権限をChannel join時に評価・キャッシュします。Policyやclaimを変えた場合はChannelを再接続して検証してください。
+## 4. Supabase Keep Alive
+
+Supabase Free Projectは低アクティビティ時にpauseされる可能性があります。[`.github/workflows/supabase-keep-alive.yml`](../.github/workflows/supabase-keep-alive.yml) は3日ごと、および手動実行時に対象単一ProjectのREST APIへ疎通します。
+
+GitHub Repositoryの **Settings → Secrets and variables → Actions** に次のRepository Secretsを登録します。
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+
+名前はworkflowと完全一致させます。URLやkeyをworkflowへ直書きせず、Secret実値をcommitしません。失敗時は **Actions → Supabase Keep Alive → 失敗run → Send keep-alive request to Supabase REST API** を開きます。未設定、Project pause、URL/key不一致、API障害を確認し、ログへkeyを貼り直さないでください。詳細は[Runbook](./troubleshooting.md#keepalive-01)を参照してください。
+
+Keep Aliveは有料Planへの移行・課金・クレジットカード登録を行いません。また、pause回避を保証するものではありません。
+
+## 無料構成とkey移行
+
+現行機能は [Supabase Free](https://supabase.com/pricing) と [Cloudflare Workers Free](https://developers.cloudflare.com/workers/platform/pricing/) の範囲で構成でき、Private Channel / Realtime Authorization自体のためにPro契約を必須化していません。本リポジトリは有料機能、課金設定、自動Plan移行、クレジットカード登録を要求しません。最新limitsは各公式ページを確認してください。
+
+Supabaseの新しいpublishable/secret keyとSigning Keysへの移行は将来対応候補です。現行のlegacy anon/service role/JWT secretから今回切り替える必要はありません。
+
+## デプロイ前チェックリスト
+
+### Supabase
+
+- [ ] `202608300001_realtime_authorization.sql` 適用済み
+- [ ] `realtime.messages` のRLS Policyを確認済み
+- [ ] Realtime Settingsの **Allow public access** がOFF
+- [ ] Worker `SUPABASE_URL` とRoomで使うProjectが一致
+- [ ] service role keyとJWT secretはWorker Secretだけに存在
+- [ ] Student JWTで別Roomへjoinできない
+- [ ] Student JWTでTeacher Inboxへjoinできない
+- [ ] Student JWTでTeacher制御Broadcastを直接送信できない
+
+### Cloudflare
+
+- [ ] production `JWT_SECRET` 設定済み
+- [ ] production `SUPABASE_JWT_SECRET` 設定済み
+- [ ] `SUPABASE_URL` 設定済み
+- [ ] `SUPABASE_SERVICE_ROLE_KEY` 設定済み
+- [ ] `ALLOWED_ORIGINS` は正式Originだけ
+- [ ] 開発既知Secretと `admin123` をproductionで使用していない
+- [ ] 初期Teacher作成後のbootstrap credentialsを見直した
+
+### 動作確認
+
+- [ ] Teacher login、Room作成・更新・受付ON/OFF
+- [ ] Student check-in、回答送信、Teacher回答受信
+- [ ] Teacher reset、seat lock、Student eviction、Room layout update
+- [ ] Realtime切断後の再接続
+- [ ] Student fallbackが有効になり、再接続後に解除される
+- [ ] 無効・期限切れJWTを拒否
+- [ ] Browser Console / Worker logsにCredentialが出ない
+- [ ] [`docs/troubleshooting.md`](./troubleshooting.md) に従い各ログへ到達できる
+
+このチェックリスト完了後にのみ `main` へmergeしてください。

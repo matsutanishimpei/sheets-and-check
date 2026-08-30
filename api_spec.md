@@ -1,311 +1,165 @@
-# Seats & Check — API 仕様書 (API Specification)
+# Seats & Check API仕様
 
-本プロジェクトにおける、Hono (Backend / Cloudflare Workers) で提供されている REST API および Hono RPC 連携用の仕様書です。
-API 通信は `@my-app/shared` の Zod スキーマによる型安全なバリデーションが適用されており、フロントエンドからは Hono RPC クライアント (`hc`) を介して完全に型安全な状態で呼び出すことができます。
+実装は `packages/backend/src/index.ts` です。JSON requestはZodで検証されます。Teacher保護APIは `Authorization: Bearer <TEACHER_JWT>`、Student relayは `Authorization: Bearer <STUDENT_SUPABASE_JWT>` が必要です。JWTやKeyの実値をログ・Issue・資料へ貼らないでください。
 
----
+## 一覧
 
-## 🏗️ 共通仕様
+| Method | Path | 認証 |
+| --- | --- | --- |
+| GET | `/api/hello` | なし |
+| GET | `/api/rooms/:id` | なし |
+| POST | `/api/rooms/:id/student-token` | なし |
+| POST | `/api/rooms/:id/student-event` | Student JWT |
+| POST | `/api/auth/teacher/login` | なし |
+| GET | `/api/rooms` | Teacher JWT |
+| POST | `/api/rooms` | Teacher JWT |
+| PUT | `/api/rooms/:id` | Teacher JWT |
+| PATCH | `/api/rooms/:id/status` | Teacher JWT |
+| DELETE | `/api/rooms/:id` | Teacher JWT |
+| GET | `/api/teachers` | Teacher JWT |
+| POST | `/api/teachers` | Teacher JWT |
+| DELETE | `/api/teachers/:id` | Teacher JWT |
 
-### ベース URL
-* **ローカル開発環境**: `http://127.0.0.1:8787`
-* **本番環境 (Cloudflare Workers)**: `https://[WORKER_NAME].[SUBDOMAIN].workers.dev`
+## 共通エラー
 
-### 認証方式
-教員向けの保護されたエンドポイントは、リクエストヘッダーに **Bearer トークン** を付与する必要があります。
-```http
-Authorization: Bearer <TEACHER_JWT_TOKEN>
+- Zod validation failure: `400`
+- Teacher JWTなし・無効・期限切れ: `401 { "error": "Unauthorized", "code": "AUTH-T-01" }`
+- 想定外のAPI内部障害: `500`。productionでは元例外をレスポンスへ含めず、Worker logへ残します。
+- Room POST/PUTは64 KiBを超える本文を `413` で拒否します。
+
+## Public API
+
+### `GET /api/hello`
+
+`200`: `{ "message": "Hello Hono!" }`
+
+### `GET /api/rooms/:id`
+
+Roomの公開参加情報を返します。認証はありません。
+
+`200`:
+
+```json
+{
+  "id": "<room-uuid>",
+  "name": "講義室A",
+  "grid": [{ "x": 1, "y": 1, "type": "student" }],
+  "isActive": true,
+  "supabaseUrl": "https://<project-ref>.supabase.co",
+  "supabaseAnonKey": "<public-anon-key>"
+}
 ```
 
----
+`404`: Roomなし。`500`: Repository障害。`supabaseAnonKey` は現行Supabase client接続用のlegacy公開anon keyです。service role keyは返しません。
 
-## 📂 API エンドポイント一覧
+### `POST /api/rooms/:id/student-token`
 
-| メソッド | パス | 保護 | 説明 |
-| :--- | :--- | :---: | :--- |
-| **GET** | `/api/hello` | 🟢 | API ヘルスチェック |
-| **GET** | `/api/rooms` | 🔴 | 登録されている全教室の一覧を取得 |
-| **GET** | `/api/rooms/:id` | 🟢 | 指定された教室のグリッド・レイアウト設定を取得 |
-| **POST** | `/api/rooms` | 🔴 | 新しい教室レイアウトを新規登録 (UUIDを自動生成) |
-| **PUT** | `/api/rooms/:id` | 🔴 | 既存の教室レイアウト・接続設定を上書き更新 |
-| **PATCH** | `/api/rooms/:id/status` | 🔴 | 教室のチェックイン受付状態 (Open/Closed) のトグル |
-| **DELETE** | `/api/rooms/:id` | 🔴 | 教室情報をデータベースから物理削除 |
-| **POST** | `/api/auth/teacher/login` | 🟢 | 教員アカウントの認証 (ログイン) および JWT の発行 |
-| **POST** | `/api/rooms/:id/student-token` | 🟢 | 学生用のリアルタイム接続検証 JWT トークンの発行 |
-| **POST** | `/api/rooms/:id/student-event` | 🟡 | 学生JWTを検証して回答をTeacher専用Topicへ中継 |
-| **GET** | `/api/teachers` | 🔴 | 登録されている教員アカウントの一覧を取得 |
-| **POST** | `/api/teachers` | 🔴 | 新規教員アカウントを登録 (パスワード自動ハッシュ化) |
-| **DELETE** | `/api/teachers/:id` | 🔴 | 指定された教員アカウントの削除 (自分自身は削除不可) |
+Request:
 
-> 🔴 = Teacher JWT必須 / 🟡 = Student Supabase JWT必須 / 🟢 = パブリックアクセス
+```json
+{ "studentId": "STU001", "name": "学生 太郎" }
+```
 
----
+`studentId` は5〜15文字の英数字、`name` は1〜100文字です。Room受付中なら、6時間有効のStudent Realtime JWTを返します。
 
-## 🛰️ 各エンドポイント詳細
+`200`:
 
-### 1. ヘルスチェック
-API サーバーが正常に稼働しているかを確認します。
+```json
+{
+  "supabaseToken": "<student-jwt>",
+  "studentId": "STU001",
+  "name": "学生 太郎",
+  "roomId": "<room-uuid>"
+}
+```
 
-* **メソッド**: `GET`
-* **パス**: `/api/hello`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "message": "Hello Hono!"
-  }
-  ```
+`400`: 入力不正。`403`: Room受付停止。`404`: Roomなし。`500`: JWT設定・内部障害。このチェックインは強い本人確認ではありません。ただし発行後のRoom境界とrelay本人情報はJWT claimで固定されます。
 
----
+### `POST /api/rooms/:id/student-event`
 
-### 2. 教室一覧取得
-登録されている教室（UUID と教室名、Supabase URL等）のリストを返します。
+Student回答専用の認証付きHTTP relayです。StudentはTeacher Inboxへ直接Broadcastしません。
 
-* **メソッド**: `GET`
-* **パス**: `/api/rooms`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "rooms": [
-      {
-        "id": "045415f5-abb5-4c8b-ac50-4a5979547ba3",
-        "name": "203講義室 (水曜2限)",
-        "supabaseUrl": "https://fdqjupakrmaubxwaapbn.supabase.co",
-        "supabaseAnonKey": "eyJhbGciOi..."
-      }
-    ]
-  }
-  ```
+Request header: `Authorization: Bearer <STUDENT_SUPABASE_JWT>`
 
----
+```json
+{ "seatId": "1,1", "status": "ok", "comment": "理解できました" }
+```
 
-### 3. 教室レイアウト取得
-指定された教室のレイアウト、ドラッグ＆ドロップ用グリッド情報、接続情報を取得します。
+`status` は `ok` / `ng` / `none`、`comment` は任意で最大1000文字です。余分なfieldを拒否するため、本文の `studentId`、`studentName`、Teacher制御eventは受理されません。WorkerはJWTの `roomId` をpathと照合し、`studentId` と `name` をclaimから取得して `room:<roomId>:teacher` へREST Broadcastします。
 
-* **メソッド**: `GET`
-* **パス**: `/api/rooms/:id`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "id": "045415f5-abb5-4c8b-ac50-4a5979547ba3",
-    "name": "203講義室 (水曜2限)",
-    "grid": [
-      { "id": "cell-1", "x": 0, "y": 0, "type": "student", "label": "A-1" }
-    ],
-    "isActive": true,
-    "supabaseUrl": "https://fdqjupakrmaubxwaapbn.supabase.co",
-    "supabaseAnonKey": "eyJhbGciOi..."
-  }
-  ```
-* **エラー**: `404 Not Found` (指定された教室が存在しない)
+`200`: `{ "success": true }`
 
----
+- `400`: 本文不正・余分な本人情報
+- `401`: JWTなし、無効、期限切れ、別Room、claim不正
+- `403`: Roomなしまたは受付停止（存在有無を区別しません）
+- `502 { "error": "Student event could not be delivered", "code": "RT-RELAY-01" }`: Supabase relay通信・非2xx
+- `503 { "error": "Student event could not be delivered", "code": "CFG-SB-01" }`: WorkerのSupabase設定不足またはRoom Project不一致
+- `500`: その他の内部障害
 
-### 4. 教室レイアウト新規登録
-新しい教室を登録します。教室 ID (UUIDv4) はバックエンド側で自動生成されます。
+Supabaseの非2xx本文はユーザーへ返しません。
 
-* **メソッド**: `POST`
-* **パス**: `/api/rooms`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **バリデーションスキーマ**: `SaveRoomLayoutInputSchema` (Zod)
-* **リクエストボディ**:
-  ```json
-  {
-    "name": "304講義室",
-    "grid": [],
-    "supabaseUrl": "https://your-supabase.supabase.co",
-    "supabaseAnonKey": "your-anon-key",
-    "isActive": true
-  }
-  ```
-* **レスポンス**: `201 Created`
-  ```json
-  {
-    "id": "bc86298a-8a8b-4b13-8eb0-f925c48b262a",
-    "name": "304講義室",
-    "grid": [],
-    "isActive": true,
-    "supabaseUrl": "https://your-supabase.supabase.co",
-    "supabaseAnonKey": "your-anon-key"
-  }
-  ```
+### `POST /api/auth/teacher/login`
 
----
+Request:
 
-### 5. 教室レイアウト上書き更新
-既存の教室のグリッド配置、Supabase 設定情報などを上書き更新します。
+```json
+{ "username": "teacher_name", "password": "<password>" }
+```
 
-* **メソッド**: `PUT`
-* **パス**: `/api/rooms/:id`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **バリデーションスキーマ**: `SaveRoomLayoutInputSchema` (Zod)
-* **リクエストボディ**: (POST 形式と同様)
-* **レスポンス**: `200 OK` (更新されたデータモデル)
-* **エラー**: `404 Not Found` (対象の部屋が存在しない)
+`200`:
 
----
+```json
+{
+  "token": "<24-hour-app-jwt>",
+  "supabaseToken": "<12-hour-realtime-jwt>",
+  "teacher": { "id": "<teacher-uuid>", "username": "teacher_name" }
+}
+```
 
-### 6. 受付状態 (Open/Closed) のトグル
-教室の着席・チェックインを受け付けるかどうかの状態を軽量に変更します。
+`400`: 入力不正。`401`: 資格情報不一致。`429`: isolate内の失敗回数制限。`500`: production Secret未設定等。代表的な認証障害は `AUTH-T-01` を返しますが、資格情報の成否理由やSecret名・値は返しません。
 
-* **メソッド**: `PATCH`
-* **パス**: `/api/rooms/:id/status`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **リクエストボディ**:
-  ```json
-  {
-    "isActive": false
-  }
-  ```
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "id": "bc86298a-8a8b-4b13-8eb0-f925c48b262a",
-    "isActive": false
-  }
-  ```
+## Teacher認証必須API
 
----
+### `GET /api/rooms`
 
-### 7. 教室削除
-教室を物理的にデータベースから削除します。
+`200`: `{ "rooms": [ ... ] }`。一覧ではgridを省略します。`500`: Repository障害。
 
-* **メソッド**: `DELETE`
-* **パス**: `/api/rooms/:id`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "success": true,
-    "id": "bc86298a-8a8b-4b13-8eb0-f925c48b262a"
-  }
-  ```
----
+### `POST /api/rooms`
 
-### 8. 教員ログイン
-教員のログインを認証し、アプリ管理用のセッション JWT および Supabase Realtime 購読を認可するためのセキュリティトークンを返します。
+```json
+{
+  "name": "講義室A",
+  "grid": [{ "x": 1, "y": 1, "type": "student" }],
+  "supabaseUrl": "https://<project-ref>.supabase.co",
+  "supabaseAnonKey": "<public-anon-key>",
+  "isActive": true
+}
+```
 
-* **メソッド**: `POST`
-* **パス**: `/api/auth/teacher/login`
-* **バリデーションスキーマ**: `TeacherLoginInputSchema` (Zod)
-* **リクエストボディ**:
-  ```json
-  {
-    "username": "teacher_admin",
-    "password": "adminpassword123"
-  }
-  ```
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "token": "eyJhbGciOi...", // アプリケーション管理用 JWT トークン (有効期間24時間)
-    "supabaseToken": "eyJhbGciOi...", // Supabase 認証用カスタムクレームトークン
-    "teacher": {
-      "id": "teacher-default-uuid",
-      "username": "teacher_admin"
-    }
-  }
-  ```
-* **エラー**: `401 Unauthorized` (ユーザー名またはパスワードが正しくない場合)
+`201`: UUIDを付与したRoom。`400`: validationまたはProject不一致。`413`: 本文超過。`503`: production `SUPABASE_URL` 未設定。`500`: Repository障害。
 
----
+productionでは `normalize(request.supabaseUrl) == normalize(Worker SUPABASE_URL)` が必須です。`normalize` は前後空白と末尾の `/` を個数に関係なく除去します。Project不一致・設定不備は `CFG-SB-01` で、Repositoryへ書き込む前に拒否します。
 
-### 9. 学生チェックイン用リアルタイム認証
-学生が該当教室に接続する際、安全に Supabase Realtime に購読を認可するための署名トークンを取得します。
+### `PUT /api/rooms/:id`
 
-* **メソッド**: `POST`
-* **パス**: `/api/rooms/:id/student-token`
-* **リクエストボディ**:
-  ```json
-  {
-    "studentId": "24JZ0101",
-    "name": "電電 太郎"
-  }
-  ```
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "supabaseToken": "eyJhbGciOi...",
-    "studentId": "24JZ0101",
-    "name": "電電 太郎",
-    "roomId": "bc86298a-8a8b-4b13-8eb0-f925c48b262a"
-  }
-  ```
-* **エラー**: `403 Forbidden` (`isActive === false` のRoom)
+RequestとProject検証はPOSTと同じです。`200`: 更新済みRoom。`400`: validationまたはProject不一致。`404`: Roomなし。`413`: 本文超過。`503`: production設定不足。`500`: Repository障害。不一致時は既存Roomを変更しません。
 
----
+### `PATCH /api/rooms/:id/status`
 
-### 9.5 学生回答中継
-学生用JWTを検証し、本文の本人情報を信用せずJWT claimの `studentId` / `name` を付与して `student_to_teacher` を中継します。
+Request: `{ "isActive": false }`。`200`: `{ "id": "<room-uuid>", "isActive": false }`。`400`: 入力不正。`404`: Roomなし。`500`: Repository障害。
 
-* **メソッド**: `POST`
-* **パス**: `/api/rooms/:id/student-event`
-* **ヘッダー**: `Authorization: Bearer <STUDENT_SUPABASE_JWT>`
-* **本文**: `seatId`, `status`, 任意の `comment` のみ。`studentId` と氏名はJWT claimから決定され、本文へ含めると拒否されます。
-* **エラー**: `401` (無効JWT・別Room), `403` (Room closed), `400` (余分な本人情報やTeacherイベント)
+### `DELETE /api/rooms/:id`
 
----
+`200`: `{ "success": true, "id": "<room-uuid>" }`。`404`: Roomなし。`500`: Repository障害。
 
-### 10. 教員アカウント一覧
-現在登録されている全教員の情報を返します。ログイン中のパスワードハッシュはセキュアに秘匿されます。
+### `GET /api/teachers`
 
-* **メソッド**: `GET`
-* **パス**: `/api/teachers`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "teachers": [
-      {
-        "id": "teacher-default-uuid",
-        "username": "teacher_admin",
-        "createdAt": "2026-05-12 15:00:00"
-      }
-    ]
-  }
-  ```
+`200`: `{ "teachers": [{ "id", "username", "createdAt", "lastLoginAt" }] }`。password hashはRepository契約上返しません。`500`: Repository障害。
 
----
+### `POST /api/teachers`
 
-### 11. 新規教員アカウント登録
-管理権限を持つ他の教員アカウントを新しく追加します。パスワードは自動的に `bcryptjs` (Cost Factor: 10) でハッシュ化されて永続化されます。
+RequestはTeacher loginと同じschemaです。`201`: `{ "success": true, "teacher": { "id", "username" } }`。`400`: 入力不正またはusername重複。`500`: Repository障害。
 
-* **メソッド**: `POST`
-* **パス**: `/api/teachers`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **バリデーションスキーマ**: `TeacherLoginInputSchema` (Zod)
-* **リクエストボディ**:
-  ```json
-  {
-    "username": "yamada_sensei",
-    "password": "yamadaSecurePassword789"
-  }
-  ```
-* **レスポンス**: `201 Created`
-  ```json
-  {
-    "success": true,
-    "teacher": {
-      "id": "f89d3a7e-ca83-4902-8fc2-a89b6f4e1d3c",
-      "username": "yamada_sensei"
-    }
-  }
-  ```
-* **エラー**: `400 Bad Request` (ユーザー名がすでに重複して登録されている場合)
+### `DELETE /api/teachers/:id`
 
----
-
-### 12. 教員アカウント削除
-指定された教員アカウントを削除します。ただし、セキュリティ事故を防止するため、**現在ログイン中の自分自身のアカウントを削除しようとした場合は拒否されます。**
-
-* **メソッド**: `DELETE`
-* **パス**: `/api/teachers/:id`
-* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
-* **レスポンス**: `200 OK`
-  ```json
-  {
-    "success": true,
-    "id": "f89d3a7e-ca83-4902-8fc2-a89b6f4e1d3c"
-  }
-  ```
-* **エラー**: `400 Bad Request` (自分自身の削除を試みた場合)
+`200`: `{ "success": true, "id": "<teacher-uuid>" }`。`400`: ログイン中の自分自身の削除。`500`: Repository障害。

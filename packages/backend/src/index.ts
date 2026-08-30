@@ -36,20 +36,35 @@ const app = new Hono<AppEnv>();
 const DEV_APP_SECRET = 'dev-app-jwt-secret-key-123';
 const DEV_SUPABASE_SECRET = 'dev-supabase-jwt-secret-key-456';
 const MAX_ROOM_PAYLOAD_BYTES = 64 * 1024;
+const MAX_RELAY_ERROR_BODY_LENGTH = 1000;
 const DEFAULT_PRODUCTION_ORIGIN = 'https://seat-check.pages.dev';
-const isProduction = (env?: Bindings) => env?.ENVIRONMENT === 'production';
+const ERROR_CODES = {
+  teacherAuth: 'AUTH-T-01',
+  supabaseConfig: 'CFG-SB-01',
+  realtimeRelay: 'RT-RELAY-01',
+} as const;
+// Only explicit local/test modes may use development fallbacks. Missing or unknown
+// deployment modes fail closed so a dropped ENVIRONMENT binding cannot enable them.
+const isProduction = (env?: Bindings) => env?.ENVIRONMENT !== 'development' && env?.ENVIRONMENT !== 'test';
 
 const normalizeSupabaseUrl = (url: string) => url.trim().replace(/\/+$/, '');
 
 const validateRoomSupabaseProject = (env: Bindings | undefined, roomSupabaseUrl: string) => {
   if (!isProduction(env)) return null;
   const configuredUrl = env?.SUPABASE_URL?.trim();
-  if (!configuredUrl) return { status: 503 as const, error: 'Room storage is unavailable' };
+  if (!configuredUrl) return { status: 503 as const, error: 'Room storage is unavailable', code: ERROR_CODES.supabaseConfig };
   if (normalizeSupabaseUrl(configuredUrl) !== normalizeSupabaseUrl(roomSupabaseUrl)) {
-    return { status: 400 as const, error: 'Room Supabase configuration is invalid' };
+    return { status: 400 as const, error: 'Room Supabase configuration is invalid', code: ERROR_CODES.supabaseConfig };
   }
   return null;
 };
+
+const redactDiagnosticText = (value: string) => value
+  .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+  .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED_JWT]')
+  .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/gi, '[REDACTED_KEY]')
+  .replace(/((?:authorization|api[ _-]?key|anon[ _-]?key|publishable[ _-]?key|password|jwt[ _-]?secret|service[ _-]?role[ _-]?key)["'\s:=]+)[^\s,;"'}]+/gi, '$1[REDACTED]')
+  .slice(0, MAX_RELAY_ERROR_BODY_LENGTH);
 
 const getSecret = (env: Bindings | undefined, key: 'JWT_SECRET' | 'SUPABASE_JWT_SECRET'): string => {
   const fallback = key === 'JWT_SECRET' ? DEV_APP_SECRET : DEV_SUPABASE_SECRET;
@@ -87,9 +102,10 @@ app.use('*', cors({
   credentials: true,
 }));
 
-const internalError = (c: Context<AppEnv>, publicMessage: string, err: unknown) => {
-  console.error(publicMessage, err);
-  const response: { error: string; message?: string } = { error: publicMessage };
+const internalError = (c: Context<AppEnv>, publicMessage: string, err: unknown, code?: string) => {
+  console.error(code ? `[${code}] ${publicMessage}` : publicMessage, err);
+  const response: { error: string; code?: string; message?: string } = { error: publicMessage };
+  if (code) response.code = code;
   if (!isProduction(c.env) && err instanceof Error) response.message = err.message;
   return c.json(response, 500);
 };
@@ -111,7 +127,13 @@ const requireTeacher = async (c: Context<AppEnv>, next: Next) => {
     c.set('teacherAuthUser', await verifyTeacher(c));
     await next();
   } catch {
-    return c.json({ error: 'Unauthorized' }, 401);
+    console.warn(`[${ERROR_CODES.teacherAuth}] Teacher authorization rejected`, {
+      errorCode: ERROR_CODES.teacherAuth,
+      operation: 'teacher-api-authorization',
+      path: c.req.path,
+      status: 401,
+    });
+    return c.json({ error: 'Unauthorized', code: ERROR_CODES.teacherAuth }, 401);
   }
 };
 
@@ -202,33 +224,72 @@ const routes = app
     const roomId = c.req.param('id');
     const authHeader = c.req.header('Authorization');
     if (!authHeader?.startsWith('Bearer ')) return c.json({ error: 'Unauthorized' }, 401);
+    let claims: Awaited<ReturnType<typeof verify>>;
     try {
-      const claims = await verify(authHeader.slice(7), getSecret(c.env, 'SUPABASE_JWT_SECRET'), 'HS256');
-      if (claims.user_role !== 'student' || claims.role !== 'authenticated' || claims.roomId !== roomId || typeof claims.studentId !== 'string' || typeof claims.name !== 'string') {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
+      claims = await verify(authHeader.slice(7), getSecret(c.env, 'SUPABASE_JWT_SECRET'), 'HS256');
+    } catch {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    if (claims.user_role !== 'student' || claims.role !== 'authenticated' || claims.roomId !== roomId || typeof claims.studentId !== 'string' || typeof claims.name !== 'string') {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    try {
       const room = await c.get('roomRepo').findById(roomId);
       if (!room || !room.isActive) return c.json({ error: 'Forbidden' }, 403);
       const configuredUrl = c.env?.SUPABASE_URL ? normalizeSupabaseUrl(c.env.SUPABASE_URL) : '';
       const roomUrl = room.supabaseUrl ? normalizeSupabaseUrl(room.supabaseUrl) : '';
       const serviceKey = c.env?.SUPABASE_SERVICE_ROLE_KEY?.trim();
-      if (!configuredUrl || !serviceKey || configuredUrl !== roomUrl) throw new Error('Supabase relay configuration is missing or does not match the room');
+      if (!configuredUrl || !serviceKey || configuredUrl !== roomUrl) {
+        console.error(`[${ERROR_CODES.supabaseConfig}] Supabase relay configuration is unavailable`, {
+          errorCode: ERROR_CODES.supabaseConfig,
+          operation: 'student-event-relay-configuration',
+          roomId,
+          status: 503,
+        });
+        return c.json({ error: 'Student event could not be delivered', code: ERROR_CODES.supabaseConfig }, 503);
+      }
       const relayTopic = `room:${roomId}:teacher`;
-      const relayResponse = await fetch(`${configuredUrl}/realtime/v1/api/broadcast/${encodeURIComponent(relayTopic)}/events/student_to_teacher?private=true`, {
-        method: 'POST',
-        headers: { apikey: serviceKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...c.req.valid('json'),
-          studentId: claims.studentId,
-          studentName: claims.name,
-          updatedAt: new Date().toISOString(),
-        }),
-      });
-      if (!relayResponse.ok) throw new Error(`Supabase broadcast failed with ${relayResponse.status}`);
+      let relayResponse: Response;
+      try {
+        relayResponse = await fetch(`${configuredUrl}/realtime/v1/api/broadcast/${encodeURIComponent(relayTopic)}/events/student_to_teacher?private=true`, {
+          method: 'POST',
+          headers: { apikey: serviceKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...c.req.valid('json'),
+            studentId: claims.studentId,
+            studentName: claims.name,
+            updatedAt: new Date().toISOString(),
+          }),
+        });
+      } catch (err) {
+        console.error(`[${ERROR_CODES.realtimeRelay}] Supabase relay request failed`, {
+          errorCode: ERROR_CODES.realtimeRelay,
+          operation: 'student-event-relay',
+          roomId,
+          status: 502,
+          error: err instanceof Error ? { name: err.name, message: redactDiagnosticText(err.message) } : { name: 'UnknownRelayError' },
+        });
+        return c.json({ error: 'Student event could not be delivered', code: ERROR_CODES.realtimeRelay }, 502);
+      }
+      if (!relayResponse.ok) {
+        let responseBody = '';
+        try {
+          responseBody = redactDiagnosticText(await relayResponse.text());
+        } catch {
+          responseBody = '[unavailable]';
+        }
+        console.error(`[${ERROR_CODES.realtimeRelay}] Supabase relay failed`, {
+          errorCode: ERROR_CODES.realtimeRelay,
+          operation: 'student-event-relay',
+          roomId,
+          status: relayResponse.status,
+          response: responseBody,
+        });
+        return c.json({ error: 'Student event could not be delivered', code: ERROR_CODES.realtimeRelay }, 502);
+      }
       return c.json({ success: true });
     } catch (err) {
-      const message = err instanceof Error ? err.message.toLowerCase() : '';
-      if (message.includes('token') || message.includes('signature') || message.includes('expired')) return c.json({ error: 'Unauthorized' }, 401);
       return internalError(c, 'Student event could not be delivered', err);
     }
   })
@@ -246,7 +307,15 @@ const routes = app
     const body = c.req.valid('json');
     const id = crypto.randomUUID();
     const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
-    if (configurationError) return c.json({ error: configurationError.error }, configurationError.status);
+    if (configurationError) {
+      console.error(`[${configurationError.code}] Room Supabase configuration rejected`, {
+        errorCode: configurationError.code,
+        operation: 'create-room',
+        roomId: id,
+        status: configurationError.status,
+      });
+      return c.json({ error: configurationError.error, code: configurationError.code }, configurationError.status);
+    }
     try {
       await c.get('roomRepo').create({ id, name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false }, 201);
@@ -261,7 +330,15 @@ const routes = app
     try {
       if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
       const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
-      if (configurationError) return c.json({ error: configurationError.error }, configurationError.status);
+      if (configurationError) {
+        console.error(`[${configurationError.code}] Room Supabase configuration rejected`, {
+          errorCode: configurationError.code,
+          operation: 'update-room',
+          roomId: id,
+          status: configurationError.status,
+        });
+        return c.json({ error: configurationError.error, code: configurationError.code }, configurationError.status);
+      }
       await c.get('roomRepo').update(id, { name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false });
     } catch (err) {
@@ -295,14 +372,26 @@ const routes = app
   .post('/api/auth/teacher/login', zValidator('json', TeacherLoginInputSchema), async (c) => {
     const { username, password } = c.req.valid('json');
     const key = loginKey(c, username);
-    if (isLoginBlocked(key)) return c.json({ error: 'Too Many Requests', retryAfter: 60 }, 429);
+    if (isLoginBlocked(key)) {
+      console.warn(`[${ERROR_CODES.teacherAuth}] Teacher login rate limited`, {
+        errorCode: ERROR_CODES.teacherAuth,
+        operation: 'teacher-login',
+        status: 429,
+      });
+      return c.json({ error: 'Too Many Requests', code: ERROR_CODES.teacherAuth, retryAfter: 60 }, 429);
+    }
     try {
       const jwtSecret = getSecret(c.env, 'JWT_SECRET');
       const supabaseJwtSecret = getSecret(c.env, 'SUPABASE_JWT_SECRET');
       const teacher = await c.get('teacherRepo').findByUsername(username);
       if (!teacher || !(await bcrypt.compare(password, teacher.passwordHash))) {
         recordLoginFailure(key);
-        return c.json({ error: 'ユーザー名またはパスワードが正しくありません' }, 401);
+        console.warn(`[${ERROR_CODES.teacherAuth}] Teacher login rejected`, {
+          errorCode: ERROR_CODES.teacherAuth,
+          operation: 'teacher-login',
+          status: 401,
+        });
+        return c.json({ error: 'ユーザー名またはパスワードが正しくありません', code: ERROR_CODES.teacherAuth }, 401);
       }
       const now = Math.floor(Date.now() / 1000);
       const token = await sign({ sub: teacher.id, username: teacher.username, role: 'teacher', iat: now, exp: now + 86_400 }, jwtSecret);
@@ -314,7 +403,7 @@ const routes = app
       await c.get('teacherRepo').updateLastLogin(teacher.id, new Date().toISOString());
       return c.json({ token, supabaseToken, teacher: { id: teacher.id, username: teacher.username } });
     } catch (err) {
-      return internalError(c, 'Teacher login is unavailable', err);
+      return internalError(c, 'Teacher login is unavailable', err, ERROR_CODES.teacherAuth);
     }
   })
 

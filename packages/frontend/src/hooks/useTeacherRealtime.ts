@@ -3,6 +3,7 @@ import { SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { RealtimeLog, LiveSeatStatus } from '@my-app/shared';
 import { playAlertSound } from '../lib/audio';
 import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
+import { logRealtimeFailure, toSafeRealtimeError, type RealtimeErrorCode } from '../lib/realtimeDiagnostics';
 
 interface UseTeacherRealtimeProps {
   supabase: SupabaseClient | null;
@@ -97,7 +98,7 @@ export function useTeacherRealtime({
       try {
         await realtimeClient.removeChannel(channel);
       } catch (err) {
-        console.warn('[Teacher] Failed to remove Realtime channel:', err);
+        console.warn('[Teacher] Failed to remove Realtime channel:', toSafeRealtimeError(err));
       }
     };
 
@@ -159,7 +160,7 @@ export function useTeacherRealtime({
         }
     };
 
-    const handleMainStatus = (channel: RealtimeChannel, status: string) => {
+    const handleMainStatus = (channel: RealtimeChannel, status: string, err?: Error) => {
       if (cancelled || teacherChannelRef.current !== channel) return;
       if (status === 'SUBSCRIBED') {
         clearMainReconnectTimer();
@@ -174,7 +175,7 @@ export function useTeacherRealtime({
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         mainSubscribedRef.current = false;
         updateRealtimeOnlineState();
-        console.warn(`[Teacher] Realtime subscription failed: ${status}. Scheduling auto-reconnect in 10s...`);
+        logRealtimeFailure('RT-T-MAIN-01', roomId, 'teacher-main', status, err);
         clearMainReconnectTimer();
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = null;
@@ -183,7 +184,7 @@ export function useTeacherRealtime({
       }
     };
 
-    const handleInboxStatus = (inbox: RealtimeChannel, status: string) => {
+    const handleInboxStatus = (inbox: RealtimeChannel, status: string, err?: Error) => {
       if (cancelled || teacherInboxRef.current !== inbox) return;
       if (status === 'SUBSCRIBED') {
         clearInboxReconnectTimer();
@@ -193,8 +194,8 @@ export function useTeacherRealtime({
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         inboxSubscribedRef.current = false;
         updateRealtimeOnlineState();
-        console.error(`[Teacher] Answer inbox subscription failed: ${status}`);
-        addToastRef.current('error', '学生回答の受信Channelに接続できません。Realtime設定と認可を確認してください。');
+        logRealtimeFailure('RT-T-INBOX-01', roomId, 'teacher-inbox', status, err);
+        addToastRef.current('error', '学生回答の受信Channelに接続できません。Realtime設定と認可を確認してください。（エラーコード: RT-T-INBOX-01）');
         clearInboxReconnectTimer();
         inboxReconnectTimeoutRef.current = setTimeout(() => {
           inboxReconnectTimeoutRef.current = null;
@@ -205,21 +206,25 @@ export function useTeacherRealtime({
 
     const subscribeMainChannel = (channel: RealtimeChannel) => {
       teacherChannelRef.current = channel;
-      channel.subscribe((status) => handleMainStatus(channel, status));
+      channel.subscribe((status, err) => handleMainStatus(channel, status, err));
     };
 
     const subscribeInboxChannel = (inbox: RealtimeChannel) => {
       inbox.on('broadcast', { event: 'student_to_teacher' }, handleStudentResponse);
       teacherInboxRef.current = inbox;
-      inbox.subscribe((status) => handleInboxStatus(inbox, status));
+      inbox.subscribe((status, err) => handleInboxStatus(inbox, status, err));
     };
 
-    const reportAuthorizationFailure = (err: unknown) => {
+    const reportAuthorizationFailure = (
+      code: RealtimeErrorCode,
+      channel: 'teacher-main' | 'teacher-inbox',
+      err: unknown,
+    ) => {
       mainSubscribedRef.current = false;
       inboxSubscribedRef.current = false;
       setIsOnline(false);
-      console.error('[Teacher] Realtime authorization failed:', err);
-      addToastRef.current('error', 'リアルタイム認証に失敗しました。再ログインしてください。');
+      logRealtimeFailure(code, roomId, channel, 'AUTHORIZATION_ERROR', err);
+      addToastRef.current('error', `リアルタイム認証に失敗しました。再ログインしてください。（エラーコード: ${code}）`);
     };
 
     async function retryMainChannel(failedChannel: RealtimeChannel) {
@@ -235,7 +240,7 @@ export function useTeacherRealtime({
         }
         subscribeMainChannel(replacement);
       } catch (err) {
-        if (!cancelled) reportAuthorizationFailure(err);
+        if (!cancelled) reportAuthorizationFailure('RT-T-MAIN-01', 'teacher-main', err);
       }
     }
 
@@ -252,19 +257,23 @@ export function useTeacherRealtime({
         }
         subscribeInboxChannel(replacement);
       } catch (err) {
-        if (!cancelled) reportAuthorizationFailure(err);
+        if (!cancelled) reportAuthorizationFailure('RT-T-INBOX-01', 'teacher-inbox', err);
       }
     }
 
     void (async () => {
       let channel: RealtimeChannel | null = null;
       let inbox: RealtimeChannel | null = null;
+      let initializationCode: RealtimeErrorCode = 'RT-T-MAIN-01';
+      let initializationChannel: 'teacher-main' | 'teacher-inbox' = 'teacher-main';
       try {
         channel = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}`);
         if (cancelled) {
           await removeChannel(channel);
           return;
         }
+        initializationCode = 'RT-T-INBOX-01';
+        initializationChannel = 'teacher-inbox';
         inbox = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}:teacher`);
         if (cancelled) {
           await Promise.all([removeChannel(channel), removeChannel(inbox)]);
@@ -275,7 +284,7 @@ export function useTeacherRealtime({
         subscribeMainChannel(channel);
       } catch (err) {
         await Promise.all([channel, inbox].filter((item): item is RealtimeChannel => item !== null).map(removeChannel));
-        if (!cancelled) reportAuthorizationFailure(err);
+        if (!cancelled) reportAuthorizationFailure(initializationCode, initializationChannel, err);
       }
     })();
 

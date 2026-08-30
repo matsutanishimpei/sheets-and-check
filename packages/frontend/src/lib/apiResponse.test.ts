@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractErrorMessage, isTeacherLoginResponse, readResponseBody } from './apiResponse';
+import { extractErrorCode, extractErrorMessage, isTeacherLoginResponse, readResponseBody } from './apiResponse';
 
 describe('apiResponse helpers', () => {
   it('readResponseBody parses JSON responses', async () => {
@@ -27,6 +27,13 @@ describe('apiResponse helpers', () => {
     expect(extractErrorMessage({ message: '失敗しました' }, 'fallback')).toBe('失敗しました');
     expect(extractErrorMessage('plain text error', 'fallback')).toBe('plain text error');
     expect(extractErrorMessage(null, 'fallback')).toBe('fallback');
+  });
+
+  it('adds only a well-formed stable error code to a user-facing message', () => {
+    expect(extractErrorMessage({ error: '認証失敗', code: 'AUTH-T-01' }, 'fallback'))
+      .toBe('認証失敗（エラーコード: AUTH-T-01）');
+    expect(extractErrorCode({ code: 'RT-RELAY-01' })).toBe('RT-RELAY-01');
+    expect(extractErrorCode({ code: 'unsafe code: secret' })).toBeNull();
   });
 
   it('isTeacherLoginResponse validates the login payload shape', () => {

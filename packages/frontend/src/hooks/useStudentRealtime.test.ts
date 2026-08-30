@@ -58,6 +58,20 @@ describe('useStudentRealtime Student answer relay', () => {
     expect(sendResult).toBe('error');
   });
 
+  it('shows the stable Worker error code without exposing the relay response body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: 'Student event could not be delivered',
+      code: 'RT-RELAY-01',
+    }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+    const addToast = vi.fn();
+    const { result } = renderHook(() => useStudentRealtime({ ...props, addToast }));
+
+    await act(async () => {
+      expect(await result.current.sendStudentToTeacherBroadcast('1,1', 'ng', 'Name', 'STU001')).toBe('error');
+    });
+    expect(addToast).toHaveBeenCalledWith('error', expect.stringContaining('RT-RELAY-01'));
+  });
+
   it('keeps the four Teacher-to-Student control event listeners active', async () => {
     const handlers = new Map<string, (response: { payload?: Record<string, unknown> }) => void>();
     const channel: any = {
@@ -100,7 +114,7 @@ describe('useStudentRealtime Student answer relay', () => {
 
   it('activates fallback on CLOSED and retries with status monitoring until SUBSCRIBED', async () => {
     vi.useFakeTimers();
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const makeChannel = () => {
       const channel: any = {
         on: vi.fn(() => channel),
@@ -124,8 +138,18 @@ describe('useStudentRealtime Student answer relay', () => {
     const firstStatusHandler = firstChannel.subscribe.mock.calls[0]?.[0];
     expect(firstStatusHandler).toBeTypeOf('function');
 
-    act(() => firstStatusHandler('CLOSED'));
+    act(() => firstStatusHandler('CLOSED', new Error('join closed')));
     expect(result.current.isFallbackActive).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[RT-S-CHANNEL-01]'),
+      expect.objectContaining({
+        errorCode: 'RT-S-CHANNEL-01',
+        status: 'CLOSED',
+        roomId: 'room-1',
+        channel: 'student',
+        error: expect.objectContaining({ message: 'join closed' }),
+      }),
+    );
 
     await act(async () => {
       vi.advanceTimersByTime(10000);
@@ -141,7 +165,7 @@ describe('useStudentRealtime Student answer relay', () => {
 
   it('does not retry after unmount', async () => {
     vi.useFakeTimers();
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const channel: any = {
       on: vi.fn(() => channel),
       subscribe: vi.fn(),

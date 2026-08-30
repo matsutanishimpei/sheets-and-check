@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
+import { logRealtimeFailure, toSafeRealtimeError } from '../lib/realtimeDiagnostics';
+import { extractErrorCode, readResponseBody } from '../lib/apiResponse';
 
 interface UseStudentRealtimeProps {
   supabase: SupabaseClient | null;
@@ -80,7 +82,7 @@ export function useStudentRealtime({
       try {
         await supabase.removeChannel(channel);
       } catch (err) {
-        console.warn('[Student] Failed to remove Realtime channel:', err);
+        console.warn('[Student] Failed to remove Realtime channel:', toSafeRealtimeError(err));
       }
     };
 
@@ -91,15 +93,15 @@ export function useStudentRealtime({
       }
     };
 
-    const handleStatus = (channel: RealtimeChannel, status: string) => {
+    const handleStatus = (channel: RealtimeChannel, status: string, err?: Error) => {
       if (cancelled || studentChannelRef.current !== channel) return;
       if (status === 'SUBSCRIBED') {
         clearReconnectTimer();
         setIsFallbackActive(false);
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        console.warn(`[Student] Realtime subscription status failed: ${status}. Fallback activated.`);
+        logRealtimeFailure('RT-S-CHANNEL-01', studentClassroomId, 'student', status, err);
         setIsFallbackActive(true);
-        addToastRef.current('warning', 'リアルタイム接続に失敗しました。教室の接続設定に問題がある可能性があります。教員に確認してください。バックアップの自動同期へ移行しました。');
+        addToastRef.current('warning', 'リアルタイム接続に失敗しました。教室の接続設定に問題がある可能性があります。教員に確認してください。バックアップの自動同期へ移行しました。（エラーコード: RT-S-CHANNEL-01）');
         clearReconnectTimer();
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectTimeoutRef.current = null;
@@ -128,7 +130,7 @@ export function useStudentRealtime({
         });
 
       studentChannelRef.current = channel;
-      channel.subscribe((status) => handleStatus(channel, status));
+      channel.subscribe((status, err) => handleStatus(channel, status, err));
     };
 
     const startSubscription = async () => {
@@ -141,8 +143,9 @@ export function useStudentRealtime({
         subscribeChannel(channel);
       } catch (err) {
         if (cancelled) return;
-        console.error('[Student] Realtime authorization failed:', err);
+        logRealtimeFailure('RT-S-CHANNEL-01', studentClassroomId, 'student', 'AUTHORIZATION_ERROR', err);
         setIsFallbackActive(true);
+        addToastRef.current('warning', 'リアルタイム認証に失敗しました。画面を再読み込みして再度入室してください。（エラーコード: RT-S-CHANNEL-01）');
       }
     };
 
@@ -184,7 +187,10 @@ export function useStudentRealtime({
           comment: comment || null,
         }),
       });
-      return res.ok ? 'ok' : 'error';
+      if (res.ok) return 'ok';
+      const code = extractErrorCode(await readResponseBody(res));
+      if (code) addToastRef.current('error', `回答を送信できませんでした。再送してください。（エラーコード: ${code}）`);
+      return 'error';
     } catch (err) {
       console.error('Failed to send student broadcast:', err);
       return 'error';

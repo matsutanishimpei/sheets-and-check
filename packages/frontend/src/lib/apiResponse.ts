@@ -36,23 +36,30 @@ export async function readResponseBody(response: ResponseLike): Promise<unknown>
 }
 
 export function extractErrorMessage(body: unknown, fallbackMessage: string): string {
+  const code = extractErrorCode(body);
+  const withCode = (message: string) => code ? `${message}（エラーコード: ${code}）` : message;
   if (typeof body === 'string') {
-    return body;
+    return withCode(body);
   }
 
   if (isRecord(body)) {
     const error = body.error;
     if (typeof error === 'string' && error.trim()) {
-      return error;
+      return withCode(error);
     }
 
     const message = body.message;
     if (typeof message === 'string' && message.trim()) {
-      return message;
+      return withCode(message);
     }
   }
 
   return fallbackMessage;
+}
+
+export function extractErrorCode(body: unknown): string | null {
+  if (!isRecord(body) || typeof body.code !== 'string') return null;
+  return /^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/.test(body.code) ? body.code : null;
 }
 
 export function isTeacherLoginResponse(body: unknown): body is TeacherLoginResponse {

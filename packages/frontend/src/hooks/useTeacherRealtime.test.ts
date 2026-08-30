@@ -69,12 +69,12 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
   it.each(['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'])(
     'keeps Realtime offline and reports an answer inbox %s',
     async (inboxStatus) => {
-      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const makeChannel = (status: string) => {
         const channel: any = {
           on: vi.fn(() => channel),
-          subscribe: vi.fn((callback?: (value: string) => void) => {
-            callback?.(status);
+          subscribe: vi.fn((callback?: (value: string, error?: Error) => void) => {
+            callback?.(status, new Error('safe join failure'));
             return channel;
           }),
           send: vi.fn().mockResolvedValue('ok'),
@@ -104,7 +104,17 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
       expect(result.current.isOnline).toBe(false);
       expect(addToast).toHaveBeenCalledWith(
         'error',
-        expect.stringContaining('学生回答の受信Channel'),
+        expect.stringContaining('RT-T-INBOX-01'),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[RT-T-INBOX-01]'),
+        expect.objectContaining({
+          errorCode: 'RT-T-INBOX-01',
+          status: inboxStatus,
+          roomId: 'room-1',
+          channel: 'teacher-inbox',
+          error: expect.objectContaining({ message: 'safe join failure' }),
+        }),
       );
     },
   );
@@ -140,7 +150,7 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith(
       'error',
-      'リアルタイム認証に失敗しました。再ログインしてください。',
+      'リアルタイム認証に失敗しました。再ログインしてください。（エラーコード: RT-T-INBOX-01）',
     ));
     expect(supabase.realtime.setAuth).toHaveBeenCalledTimes(2);
     expect(supabase.removeChannel).toHaveBeenCalledWith(mainChannel);
@@ -150,7 +160,7 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
 
   it('recreates the Teacher main Channel with status monitoring on retry', async () => {
     vi.useFakeTimers();
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const makeChannel = () => {
       const channel: any = {
         on: vi.fn(() => channel),

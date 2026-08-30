@@ -1,98 +1,42 @@
-# 🛠️ Seats & Check - 開発者・貢献者向けガイド (contributor.md)
+# 開発者・貢献者ガイド
 
-本プロジェクト（`sheat-check`）へ貢献（開発、バグ修正、機能追加）するための技術的ガイドラインです。
+## 環境
 
----
+Node.js `20.x` とnpm workspacesを使用します。依存関係はリポジトリルートでlockfileどおりに導入します。
 
-## 🏗️ 1. 技術スタックと構成
-本プロジェクトは、フロントエンドからバックエンドまでを完全な型安全で繋ぐために `npm workspaces` を用いたモノレポ構成で構築されています。
-
-* **モノレポ構成 (npm workspaces)**:
-  * `packages/shared/`: アプリケーション全体のデータ構造、バリデーションルール、共通型定義（TypeScript / Zod）
-  * `packages/backend/`: Hono (API) + Cloudflare Workers + D1 Database (SQLite 互換)
-  * `packages/frontend/`: React + Vite + TypeScript (UIクライアント)
-* **型安全 RPC 通信**:
-  * **Hono RPC Client (`hc`)** を用いて、バックエンドのルーターの型 (`AppType`) をフロントエンド側へインポートし、API 通信時のリクエスト/レスポンスの型安全性を 100% 担保しています。
-
----
-
-## 📂 2. 各パッケージの責責と依存ルール
-
-### 1. `packages/shared/` (最優先・型の源泉)
-* **責務**: データ構造、バリデーションスキーマの定義。
-* **開発ルール**:
-  * 新機能の追加や仕様変更の際は、**必ず最初にここの Zod スキーマ (`src/schemas/`) を定義・修正すること。**
-  * 外部（Backend/Frontend）から参照されるスキーマや型は、必ず `src/index.ts` からエクスポートしてください。インポートパスは `@my-app/shared` に一本化されます。
-  * `react` や `hono` などの実行環境固有のライブラリに依存するコードは絶対に含めないでください。
-
-### 2. `packages/backend/` (API & データベース)
-* **責務**: Hono APIサーバーと D1 データベースの管理。
-* **開発ルール**:
-  * リクエストのバリデーションには、必ず `@hono/zod-validator` と `shared` の Zod スキーマを使用してください。
-  * データベーススキーマに変更がある場合は、必ず `migrations/` ディレクトリにマイグレーション用の SQL ファイルを作成してください（SQLite 互換）。
-
-### 3. `packages/frontend/` (UI & クライアント)
-* **責務**: フロントエンド UI アプリケーション。
-* **開発ルール**:
-  * API 通信には、`fetch` や `axios` を直接使わず、必ず `src/lib/hc.ts` に定義された `hc` (Hono RPC クライアント) を経由して呼び出してください。
-  * フォームのバリデーションには `react-hook-form` と `@hookform/resolvers/zod` を用い、`shared` の Zod スキーマを適用してください。
-
----
-
-## 🔄 3. 標準開発フロー (必須手順)
-新機能を開発する際は、以下のステップを厳守してください。
-
-```mermaid
-graph TD
-    A[1. shared/src/schemas で Zod スキーマ定義] --> B[2. backend/migrations で D1 SQL 作成]
-    B --> C[3. backend/src で API エンドポイント実装 & バリデーション]
-    C --> D[4. frontend で Hono RPC 経由での API 呼び出し & UI 実装]
+```bash
+npm ci
+npm run build
+npm run typecheck
+npm run test
+git diff --check
 ```
 
-1. **Schema**: `shared` で Zod スキーマを定義し、`shared/src/index.ts` から再エクスポートする。
-2. **Migration**: データベース変更がある場合は、`backend/migrations/` に SQL を追加。
-3. **API**: `backend` にエンドポイントを作成し、スキーマバリデーションをかける。
-4. **UI**: `frontend` にコンポーネントを作成し、Hono RPC 経由で API を呼び出す。
+`packages/shared` はZod schemaと共通型、`packages/backend` はHono/Cloudflare Workers/D1、`packages/frontend` はReact/Viteです。D1 schema変更は `packages/backend/migrations` に追加します。
 
----
+## Security / Realtime invariants
 
-## 🚀 4. ローカル開発環境の起動
+- productionはWorker管理の単一Supabase Projectを使用する。Teacher・Roomごとの自由なProject持込みへ戻さない。
+- Room POST/PUTとStudent relayは共通のURL正規化（trim、末尾 `/` をすべて除去）を使い、Worker `SUPABASE_URL` と一致させる。
+- Teacher/Studentは `realtime.setAuth(customJwt)` 後、`private: true` のChannelへjoinする。
+- Teacher制御eventは `room:<roomId>`。Student回答は直接Broadcastせず、認証付き `/api/rooms/:id/student-event` から `room:<roomId>:teacher` へrelayする。
+- Student本文中の本人情報は信用せず、JWT claimの `studentId` / `name` を使う。
+- Teacher正常状態はnetwork online、main `SUBSCRIBED`、Inbox `SUBSCRIBED` の論理積。
+- retry timerを重複させず、失敗Channelをremoveし、再作成したChannelにもstatus callbackを渡し、unmount後にretryしない。
+- Student回答・履歴をD1へ新規保存しない。最新回答はTeacherブラウザのメモリだけで扱う。
 
-1. **リポジトリのクローンと依存関係のインストール**:
-   ```bash
-   git clone https://github.com/matsutanishimpei/sheat-check.git
-   cd sheat-check
-   npm install
-   ```
+例外としてStudent回答relayは設計上標準 `fetch` を使用します。その他のBackend API呼出しは原則 `src/lib/hc.ts` のHono RPC clientを使います。
 
-2. **ローカル開発サーバーの起動**:
-   モノレポのルートディレクトリから以下のコマンドを実行します。
-   * バックエンド（Workers ローカル開発環境）の起動:
-     ```bash
-     npm run dev:backend
-     ```
-   * フロントエンド（Vite 開発環境）の起動:
-     ```bash
-     npm run dev:frontend
-     ```
+## エラーとログ
 
----
+ユーザー向けレスポンスは一般化し、必要な場合だけ安定したcodeを付けます。内部原因は適切なログへ記録します。
 
-## 🧪 5. 検証（型チェック・テスト・ビルド）
+- Frontend Realtime: Browser Console、`RT-T-*` / `RT-S-*`
+- Worker relay/config/auth: Cloudflare Worker logs、`RT-RELAY-01` / `CFG-SB-01` / `AUTH-T-01`
+- CI/deploy/keep-alive: GitHub Actions
 
-PR（プルリクエスト）を作成、または `main` へプッシュする前に、必ずローカルで以下のコマンドを実行し、正常終了することを確認してください。
+JWT、Authorization header、password、Secret、service role/anon/publishable key本体、Cookieをログへ出してはいけません。Student氏名・IDも接続診断ログには不要です。詳細とcode一覧は [`docs/troubleshooting.md`](./docs/troubleshooting.md) を参照してください。
 
-1. **型チェックの実行 (各パッケージ個別)**:
-   ```bash
-   npm run typecheck
-   ```
-2. **テストの実行 (Vitest)**:
-   ```bash
-   npm run test
-   ```
-3. **本番用ビルドの確認**:
-   ```bash
-   npm run build
-   ```
+## 本番変更
 
-これらは GitHub Actions (CI) でも自動的に検証され、型エラーまたはテスト失敗が発生した場合は自動的にデプロイが差し止められます。
+`main` へのpushでdeploy workflowが動きます。merge前に [`docs/realtime_authorization_setup.md`](./docs/realtime_authorization_setup.md) の外部設定とデプロイ前チェックリストを完了し、[`リモートデプロイ設定ガイド.md`](./リモートデプロイ設定ガイド.md) を確認してください。Secret実値をcommitしないでください。

@@ -44,6 +44,10 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     
     // Mount the original production app routes
     testApp.route('/', app);
+    const requestWithExplicitTestMode = testApp.request.bind(testApp);
+    testApp.request = ((input: RequestInfo | URL, requestInit?: RequestInit, env?: Record<string, unknown>) => (
+      requestWithExplicitTestMode(input, requestInit, { ENVIRONMENT: 'test', ...env })
+    )) as typeof testApp.request;
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -244,6 +248,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(res.status).toBe(401);
       const body: any = await res.json();
       expect(body.error).toContain('ユーザー名またはパスワードが正しくありません');
+      expect(body.code).toBe('AUTH-T-01');
     });
 
     it('POST /api/auth/teacher/login - should fail with non-existing username', async () => {
@@ -261,6 +266,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(res.status).toBe(401);
       const body: any = await res.json();
       expect(body.error).toContain('ユーザー名またはパスワードが正しくありません');
+      expect(body.code).toBe('AUTH-T-01');
     });
 
     it('rate limits repeated Teacher login failures without affecting Student check-in', async () => {
@@ -376,6 +382,64 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       );
     });
 
+    it('logs a bounded safe Supabase error body while returning only RT-RELAY-01 to the Student', async () => {
+      const token = await studentToken();
+      const oversizedBody = JSON.stringify({
+        message: `Bearer ${token} apikey: ${relayEnv.SUPABASE_SERVICE_ROLE_KEY} ${'failure '.repeat(300)}`,
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(oversizedBody, { status: 401 }));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatId: '1,1', status: 'ng' }),
+      }, relayEnv);
+
+      expect(response.status).toBe(502);
+      const responseText = await response.text();
+      expect(JSON.parse(responseText)).toEqual({
+        error: 'Student event could not be delivered',
+        code: 'RT-RELAY-01',
+      });
+      expect(responseText).not.toContain(token);
+      expect(responseText).not.toContain(relayEnv.SUPABASE_SERVICE_ROLE_KEY);
+
+      const relayLog = errorSpy.mock.calls.find(([message]) => String(message).includes('[RT-RELAY-01]'));
+      expect(relayLog).toBeDefined();
+      const diagnostic = relayLog?.[1] as Record<string, unknown>;
+      expect(diagnostic).toMatchObject({
+        errorCode: 'RT-RELAY-01',
+        operation: 'student-event-relay',
+        roomId: 'test-room-uuid-1',
+        status: 401,
+      });
+      expect(String(diagnostic.response).length).toBeLessThanOrEqual(1000);
+      expect(String(diagnostic.response)).not.toContain(token);
+      expect(String(diagnostic.response)).not.toContain(relayEnv.SUPABASE_SERVICE_ROLE_KEY);
+    });
+
+    it('fails closed with CFG-SB-01 without logging configured URLs or credentials', async () => {
+      const token = await studentToken();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatId: '1,1', status: 'ok' }),
+      }, { ...relayEnv, SUPABASE_URL: 'https://different-project.supabase.co' });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        error: 'Student event could not be delivered',
+        code: 'CFG-SB-01',
+      });
+      const serializedLog = JSON.stringify(errorSpy.mock.calls);
+      expect(serializedLog).toContain('CFG-SB-01');
+      expect(serializedLog).not.toContain(relayEnv.SUPABASE_URL);
+      expect(serializedLog).not.toContain(relayEnv.SUPABASE_SERVICE_ROLE_KEY);
+      expect(serializedLog).not.toContain(token);
+    });
+
     it('rejects a Student token from another room', async () => {
       const token = await studentToken('another-room');
       const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
@@ -482,7 +546,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       }, productionEnv());
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid' });
+      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid', code: 'CFG-SB-01' });
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
@@ -495,7 +559,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       }, productionEnv());
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid' });
+      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid', code: 'CFG-SB-01' });
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
@@ -519,7 +583,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       }, productionEnv(null));
 
       expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: 'Room storage is unavailable' });
+      expect(await response.json()).toEqual({ error: 'Room storage is unavailable', code: 'CFG-SB-01' });
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
@@ -530,7 +594,26 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
         body: JSON.stringify({ username: 'teacher_admin', password: 'admin123' }),
       }, { ENVIRONMENT: 'production' });
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({ error: 'Teacher login is unavailable' });
+      expect(await response.json()).toEqual({ error: 'Teacher login is unavailable', code: 'AUTH-T-01' });
+    });
+
+    it('fails closed when ENVIRONMENT itself is absent', async () => {
+      const appWithoutEnvironment = new Hono<any, any, any>();
+      appWithoutEnvironment.use('*', async (c, next) => {
+        c.set('roomRepo', mockRepo);
+        c.set('teacherRepo', mockTeacherRepo);
+        await next();
+      });
+      appWithoutEnvironment.route('/', app);
+
+      const response = await appWithoutEnvironment.request('/api/auth/teacher/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.43' },
+        body: JSON.stringify({ username: 'teacher_admin', password: 'admin123' }),
+      }, {});
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Teacher login is unavailable', code: 'AUTH-T-01' });
     });
 
     it('uses an exact production CORS allowlist and excludes preview pages.dev origins', async () => {
@@ -578,6 +661,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(res.status).toBe(401);
       const body: any = await res.json();
       expect(body.error).toBe('Unauthorized');
+      expect(body.code).toBe('AUTH-T-01');
     });
 
     it('GET /api/teachers - should fetch all teachers with a valid token', async () => {

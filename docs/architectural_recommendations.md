@@ -1,52 +1,16 @@
-# 🚀 設計・実装上の将来的な指摘・推奨事項一覧 (Architectural Recommendations)
+# 将来の設計候補と残存リスク
 
-本システムは、Hono + Vite + Zodによる型共有モノレポ、リポジトリパターンによるデータベース疎結合化、およびCloudflare D1とSupabase Realtimeを組み合わせた構成です。本番のRealtime認可では、Workerに設定した単一のSupabase Projectと各Roomの接続先を一致させる必要があります。
+現行構成はHono/Vite/Zod、Cloudflare D1、単一Worker管理Supabase Projectです。Private Channel、Worker relay、production fail closed、retry/cleanup、診断codeは実装済みです。
 
-しかし、**「将来的な数千人規模の運用」「本番のセキュリティ監査」「長期のメンテナンス性」** を見据えた際、**「しいて言うなら、ここをさらに強化すると究極のエンタープライズ品質になる」** という設計上の指摘・推奨事項を、5つの観点から以下に整理・提示いたします。
+将来候補は次に限定します。
 
----
+- Teacher app JWTのlocalStorageからHttpOnly Cookieへの移行
+- Worker isolate内Teacher login rate limitの分散化
+- Supabase legacy anon/service role/JWT secretから新API key・Signing Keysへの計画的移行
+- Student本人確認を必要とする運用での認証方式追加
 
-## 📂 指摘・推奨事項一覧
+いずれも今回の現行運用に必須ではありません。対応時も単一Project、Room境界、Student Worker relay、RLS、fail closedを維持してください。
 
-### 1. 本番初回デプロイ時の初期アカウント 【対応済み】
-本番では初期ユーザー名・パスワードの明示設定がない場合は自動作成せず、`admin123` も拒否します。既知のJWT Secretまたは未設定SecretによるToken発行も拒否します。開発・テスト環境だけ従来の既知値を使用できます。
+Student回答はTeacherブラウザのメモリだけに保持します。回答履歴、CSV archive、独自ログDBは現在の機能ではありません。
 
----
-
-### 2. JWT セッション有効期限切れに対するフロントエンド側の自動検知 【🎉 対応済み / Resolved】
-* **ステータス**: **対応済み (Resolved)**
-* **実装されたアプローチ**:
-  - `packages/frontend/src/lib/hc.ts` にて、Hono RPC Client のカスタム `fetch` オプションを利用し、API レスポンスの `401 Unauthorized` を全自動で監視・検知する **Response Interceptor** を実装。
-  - セッションJWT（有効期限24時間）の失効を検知した瞬間、LocalStorage に格納されたすべての教員認証データをクリーンアップし、ログイン画面（`/?expired=true`）へ即時リダイレクト。
-  - `LoginPage.tsx` 側で `expired=true` のクエリパラメータを検知し、自動的に「セッションの有効期限が切れました。安全のため再ログインしてください。」と警告トーストを表示。URL パラメータの履歴も瞬時にクリーンアップされます。
-
----
-
-### 3. 超大規模講義（200名〜）におけるリアルタイム同時接続制限へのフォールバック 【🎉 対応済み / Resolved】
-* **ステータス**: **対応済み (Resolved)**
-* **実装されたアプローチ**:
-  - `useRealtimeSession.ts` にて、学生側リアルタイム購読（Supabase Subscription）の接続状況を自律的に監視。定員制限や通信エラーによる `CHANNEL_ERROR` や `TIMED_OUT` を完璧にフック。
-  - 接続制限を検知した瞬間に、学生へ注意を促すトースト警告をポップアップさせると同時に、自動的に **「7秒間隔の HTTP D1 データベース・自動ポーリング（HTTP Fallback）」** を作動させ、バックアップ同期へシームレスに移行。
-  - **[StudentView.tsx](file:///d:/dev/sheets-and-check/packages/frontend/src/containers/StudentView.tsx)** の最上部には、優しく回転するギアアイコン付きの **「大教室制限により、HTTPバックアップ同期モードが稼働中」** のステータスバナーが自動的に脈動表示され、通信不通の不安を 100% 根絶しています。
-
----
-
-### 4. 悪意あるログイン試行への対策 【一部対応済み】
-Teacher loginはIP＋正規化ユーザー名ごとに、1分間5回の失敗で429を返します。現在はWorker isolate内メモリのため、全PoPで一貫した制限が必要な運用ではCloudflare Rate Limiting RulesまたはDurable Objectを追加してください。
-
----
-
-### 5. D1 データベース接続インスタンスの最適化
-* **現状の懸念**:
-  `packages/backend/src/index.ts` では、リクエストがあるたびにミドルウェア層で `new D1RoomRepository(c.env.DB)` および `new D1TeacherRepository(c.env.DB)` がインスタンス化されています。
-  これらは軽量なクラスなのでメモリやパフォーマンスへの悪影響はほぼ皆無ですが、リクエスト数が増大した際にガベージコレクション（GC）の頻度を高める小さな要因になり得ます。
-* **推奨改善策**:
-  コンテキスト（`c`）のライフサイクルにおいて、初回アクセス時のみインスタンスを生成して Workers のグローバル空間、またはミドルウェア内で変数としてキャッシュ（シングルトン化）し、リクエスト間で再利用するよう最適化すること。
-
----
-
-### 💡 監査総評
-
-上記の指摘事項は、**「さらにセキュリティと耐久性を上げて『教務システムとしての製品化・サービス展開（SaaS化）』を目指す場合」** に初めて重要になるハイレベルな内容です。
-
-残存リスクとして、Teacher JWTの`localStorage`保持、分散Rate Limit、外部Supabase ProjectでのRLS適用・手動検証があります。運用開始前に `realtime_authorization_setup.md` の外部作業を完了してください。
+本番運用前の手動作業は [`realtime_authorization_setup.md`](./realtime_authorization_setup.md)、障害対応は [`troubleshooting.md`](./troubleshooting.md) を参照してください。

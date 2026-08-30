@@ -28,7 +28,7 @@ AI エージェントは、コードを生成する際、常にこのアーキ�
 ### `packages/frontend/` (UI & クライアント)
 * **責務:** Vite / React ベースのユーザーインターフェース。
 * **ルール:**
-    * バックエンド API への通信には、標準の `fetch` や `axios` を直接使わず、必ず `src/lib/hc.ts` に定義された Hono RPC クライアント (`hc`) を使用すること。
+    * バックエンド API への通信には原則 `src/lib/hc.ts` の Hono RPC クライアント (`hc`) を使用すること。ただし、Student回答の認証付き `/api/rooms/:id/student-event` relayとfallback pollingは、現在のSecurity境界として標準 `fetch` を使用する明示的な例外である。
     * フォームのバリデーションには、`react-hook-form` と `@hookform/resolvers/zod` を用い、`shared` の Zod スキーマをそのまま適用すること。型の二重定義は禁止する。
 
 ## 🔄 3. Standard Development Workflow (標準開発フロー)
@@ -44,3 +44,7 @@ AI エージェントは、コードを生成する際、常にこのアーキ�
 * `backend` のコードが `frontend` に依存すること。
 * `shared` の中に `react` や `hono` のパッケージを `import` すること。
 * ルートディレクトリ以外で勝手に `npm install` やパッケージの追加を実行すること（依存関係はルートの workspaces で解決する）。
+
+## Realtime Security
+
+RealtimeはWorker管理の単一Supabase Project、Private Channel、custom JWT、Student HTTP relayを前提とする。詳細は `decentralized_realtime_architecture.md`（現行ルールに更新済み）、`docs/realtime_authorization_setup.md`、`docs/troubleshooting.md` を正とする。
