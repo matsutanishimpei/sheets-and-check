@@ -15,6 +15,15 @@ interface UseStudentRealtimeProps {
   onRoomLayoutUpdated: () => void;
 }
 
+interface StudentEventSendOptions {
+  keepalive?: boolean;
+}
+
+const buildApiUrl = (path: string) => {
+  const baseUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  return `${baseUrl}/${path.replace(/^\/+/, '')}`;
+};
+
 export function useStudentRealtime({
   supabase,
   studentClassroomId,
@@ -48,7 +57,7 @@ export function useStudentRealtime({
     let timer: any;
     const pollClassroom = async () => {
       try {
-        const res = await fetch(`/api/rooms/${studentClassroomId}`);
+        const res = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(studentClassroomId)}`));
         if (res.ok) {
           const data = await res.json();
           if (data && onRoomLayoutUpdatedRef.current) {
@@ -172,13 +181,13 @@ export function useStudentRealtime({
     status: 'ok' | 'ng' | 'none',
     _studentName: string,
     _studentId: string,
-    comment?: string | null
+    comment?: string | null,
+    options?: StudentEventSendOptions,
   ): Promise<'ok' | 'error'> => {
     if (!studentToken || !studentClassroomId) return 'error';
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/rooms/${encodeURIComponent(studentClassroomId)}/student-event`, {
+      const res = await fetch(buildApiUrl(`/api/rooms/${encodeURIComponent(studentClassroomId)}/student-event`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
         body: JSON.stringify({
@@ -186,6 +195,7 @@ export function useStudentRealtime({
           status,
           comment: comment || null,
         }),
+        ...(options?.keepalive ? { keepalive: true } : {}),
       });
       if (res.ok) return 'ok';
       const code = extractErrorCode(await readResponseBody(res));

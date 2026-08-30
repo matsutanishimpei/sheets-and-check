@@ -176,7 +176,7 @@ export const StudentPage: React.FC = () => {
   useEffect(() => {
     const handleUnload = () => {
       if (studentSeatId && studentClassroomId && studentName && studentId) {
-        sendStudentToTeacherBroadcast(studentSeatId, 'none', studentName, studentId);
+        sendStudentToTeacherBroadcast(studentSeatId, 'none', studentName, studentId, undefined, { keepalive: true });
       }
     };
 

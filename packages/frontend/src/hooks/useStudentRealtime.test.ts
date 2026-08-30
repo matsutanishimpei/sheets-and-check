@@ -17,6 +17,7 @@ const props = {
 describe('useStudentRealtime Student answer relay', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -30,9 +31,30 @@ describe('useStudentRealtime Student answer relay', () => {
     });
 
     expect(sendResult).toBe('ok');
-    const [, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/rooms/room-1/student-event');
     expect(JSON.parse(request.body as string)).toEqual({ seatId: '1,1', status: 'ok', comment: 'understood' });
     expect(request.headers).toMatchObject({ Authorization: 'Bearer student-jwt' });
+    expect(request).not.toHaveProperty('keepalive');
+  });
+
+  it('sets keepalive only when requested for an unload event', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const { result } = renderHook(() => useStudentRealtime(props));
+
+    await act(async () => {
+      await result.current.sendStudentToTeacherBroadcast(
+        '1,1',
+        'none',
+        'Name',
+        'STU001',
+        undefined,
+        { keepalive: true },
+      );
+    });
+
+    const [, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(request.keepalive).toBe(true);
   });
 
   it.each([401, 403, 429, 500])('reports error for Worker HTTP %s', async (status) => {
@@ -161,6 +183,72 @@ describe('useStudentRealtime Student answer relay', () => {
 
     act(() => retryStatusHandler('SUBSCRIBED'));
     expect(result.current.isFallbackActive).toBe(false);
+  });
+
+  it('polls the configured cross-origin API and stops after Realtime recovers', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_API_URL', 'https://api.example.test///');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const channel: any = {
+      on: vi.fn(() => channel),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    };
+    const supabase: any = {
+      realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+
+    const { result } = renderHook(() => useStudentRealtime({ ...props, supabase }));
+    await act(async () => undefined);
+    const statusHandler = channel.subscribe.mock.calls[0]?.[0];
+
+    act(() => statusHandler('CHANNEL_ERROR'));
+    await act(async () => {
+      vi.advanceTimersByTime(7000);
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledWith('https://api.example.test/api/rooms/room-1');
+
+    act(() => statusHandler('SUBSCRIBED'));
+    expect(result.current.isFallbackActive).toBe(false);
+    fetchMock.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(14000);
+      await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('stops fallback polling after unmount', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_API_URL', 'https://api.example.test');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const channel: any = {
+      on: vi.fn(() => channel),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    };
+    const supabase: any = {
+      realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+
+    const rendered = renderHook(() => useStudentRealtime({ ...props, supabase }));
+    await act(async () => undefined);
+    const statusHandler = channel.subscribe.mock.calls[0]?.[0];
+    act(() => statusHandler('TIMED_OUT'));
+    rendered.unmount();
+
+    await act(async () => {
+      vi.advanceTimersByTime(14000);
+      await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('does not retry after unmount', async () => {
