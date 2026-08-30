@@ -37,16 +37,21 @@ export const TeacherMonitorPage: React.FC = () => {
 
   const handleToggleActive = async () => {
     const nextActive = !session.isActive;
-    session.setIsActive(nextActive);
 
     try {
-      await client.api.rooms[':id'].status.$patch({
+      const res = await client.api.rooms[':id'].status.$patch({
         param: { id: session.roomId! },
         json: { isActive: nextActive },
       });
+      if (!res.ok) {
+        addToast('error', '受付ステータスの更新に失敗しました。再度お試しください。');
+        return;
+      }
+      session.setIsActive(nextActive);
       addToast('success', nextActive ? 'チェックインの受付を開始しました（オープン）' : 'チェックインの受付を停止しました（クローズ）');
-    } catch (err: any) {
-      console.error(`ステータス更新に失敗しました: ${err.message}`);
+    } catch (err) {
+      console.error('ステータス更新に失敗しました:', err);
+      addToast('error', '受付ステータスの更新中に通信エラーが発生しました。再度お試しください。');
     }
   };
 

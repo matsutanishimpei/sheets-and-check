@@ -117,10 +117,11 @@ export function useTeacherSession() {
   }, [seatManager.toggleSeatLock, realtimeSession.sendTeacherLockStateBroadcast]);
 
   const handleSaveClassroom = useCallback(async () => {
-    await roomLayout.saveClassroom();
-    setTimeout(() => {
-      realtimeSession.sendRoomLayoutUpdatedBroadcast();
-    }, 800);
+    const saved = await roomLayout.saveClassroom();
+    if (saved) {
+      await realtimeSession.sendRoomLayoutUpdatedBroadcast();
+    }
+    return saved;
   }, [roomLayout.saveClassroom, realtimeSession.sendRoomLayoutUpdatedBroadcast]);
 
   const handleSaveSupabaseConfig = useCallback(async () => {

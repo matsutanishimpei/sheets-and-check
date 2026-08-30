@@ -43,6 +43,7 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
     }));
 
     await waitFor(() => expect(supabase.channel).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.isOnline).toBe(true));
     expect(supabase.realtime.setAuth).toHaveBeenCalledWith('teacher-realtime-jwt');
     expect(supabase.channel).toHaveBeenCalledWith('room:room-1', expect.objectContaining({ config: expect.objectContaining({ private: true }) }));
 
@@ -60,6 +61,87 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
       'teacher_lock_state',
       'room_layout_updated',
     ]));
+  });
+
+  it.each(['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'])(
+    'keeps Realtime offline and reports an answer inbox %s',
+    async (inboxStatus) => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const makeChannel = (status: string) => {
+        const channel: any = {
+          on: vi.fn(() => channel),
+          subscribe: vi.fn((callback?: (value: string) => void) => {
+            callback?.(status);
+            return channel;
+          }),
+          send: vi.fn().mockResolvedValue('ok'),
+          unsubscribe: vi.fn(),
+        };
+        return channel;
+      };
+      const mainChannel = makeChannel('SUBSCRIBED');
+      const inboxChannel = makeChannel(inboxStatus);
+      const addToast = vi.fn();
+      const supabase: any = {
+        realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+        channel: vi.fn((topic: string) => topic.endsWith(':teacher') ? inboxChannel : mainChannel),
+        removeChannel: vi.fn().mockResolvedValue('ok'),
+      };
+
+      const { result } = renderHook(() => useTeacherRealtime({
+        supabase,
+        realtimeToken: 'teacher-realtime-jwt',
+        roomId: 'room-1',
+        isSeatLocked: false,
+        setLiveStatuses: vi.fn(),
+        addToast,
+      }));
+
+      await waitFor(() => expect(mainChannel.subscribe).toHaveBeenCalled());
+      expect(result.current.isOnline).toBe(false);
+      expect(addToast).toHaveBeenCalledWith(
+        'error',
+        expect.stringContaining('学生回答の受信Channel'),
+      );
+    },
+  );
+
+  it('reports an answer inbox authorization failure and remains offline', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const mainChannel: any = {
+      on: vi.fn(() => mainChannel),
+      subscribe: vi.fn(),
+      send: vi.fn(),
+      unsubscribe: vi.fn(),
+    };
+    const addToast = vi.fn();
+    const setLiveStatuses = vi.fn();
+    const supabase: any = {
+      realtime: {
+        setAuth: vi.fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('inbox authorization denied')),
+      },
+      channel: vi.fn(() => mainChannel),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+
+    const { result } = renderHook(() => useTeacherRealtime({
+      supabase,
+      realtimeToken: 'teacher-realtime-jwt',
+      roomId: 'room-1',
+      isSeatLocked: false,
+      setLiveStatuses,
+      addToast,
+    }));
+
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith(
+      'error',
+      'リアルタイム認証に失敗しました。再ログインしてください。',
+    ));
+    expect(supabase.realtime.setAuth).toHaveBeenCalledTimes(2);
+    expect(mainChannel.subscribe).not.toHaveBeenCalled();
+    expect(result.current.isOnline).toBe(false);
   });
 
   it('removes online and offline listeners on every unmount', () => {

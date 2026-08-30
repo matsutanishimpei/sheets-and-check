@@ -22,23 +22,33 @@ export function useTeacherRealtime({
   addToast
 }: UseTeacherRealtimeProps) {
   const [realtimeLogs, setRealtimeLogs] = useState<RealtimeLog[]>([]);
-  const [isOnline, setIsOnline] = useState(true);
+  const [isOnline, setIsOnline] = useState(false);
   const teacherChannelRef = useRef<RealtimeChannel | null>(null);
   const teacherInboxRef = useRef<RealtimeChannel | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
+  const inboxReconnectTimeoutRef = useRef<any>(null);
 
   const isSeatLockedRef = useRef(isSeatLocked);
   const addToastRef = useRef(addToast);
+  const networkOnlineRef = useRef(typeof navigator === 'undefined' ? true : navigator.onLine);
+  const mainSubscribedRef = useRef(false);
+  const inboxSubscribedRef = useRef(false);
 
   useEffect(() => { isSeatLockedRef.current = isSeatLocked; }, [isSeatLocked]);
   useEffect(() => { addToastRef.current = addToast; }, [addToast]);
 
+  const updateRealtimeOnlineState = useCallback(() => {
+    setIsOnline(networkOnlineRef.current && mainSubscribedRef.current && inboxSubscribedRef.current);
+  }, []);
+
   useEffect(() => {
     const handleOnline = () => {
-      setIsOnline(true);
+      networkOnlineRef.current = true;
+      updateRealtimeOnlineState();
       addToastRef.current('success', 'ネットワークに再接続しました');
     };
     const handleOffline = () => {
+      networkOnlineRef.current = false;
       setIsOnline(false);
       addToastRef.current('error', 'ネットワーク接続が切れました。オフライン動作中...');
     };
@@ -50,7 +60,7 @@ export function useTeacherRealtime({
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [updateRealtimeOnlineState]);
 
   // Keep only the active class's latest responses in memory.
   useEffect(() => {
@@ -70,6 +80,14 @@ export function useTeacherRealtime({
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+    if (inboxReconnectTimeoutRef.current) {
+      clearTimeout(inboxReconnectTimeoutRef.current);
+      inboxReconnectTimeoutRef.current = null;
+    }
+
+    mainSubscribedRef.current = false;
+    inboxSubscribedRef.current = false;
+    setIsOnline(false);
 
     if (!supabase || !roomId || !realtimeToken) return;
     let cancelled = false;
@@ -84,8 +102,30 @@ export function useTeacherRealtime({
           return;
         }
 
+        const handleInboxStatus = (status: string) => {
+          if (cancelled) return;
+          if (status === 'SUBSCRIBED') {
+            inboxSubscribedRef.current = true;
+            updateRealtimeOnlineState();
+            console.log(`[Teacher] Successfully subscribed to answer inbox: ${roomId}`);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            inboxSubscribedRef.current = false;
+            updateRealtimeOnlineState();
+            console.error(`[Teacher] Answer inbox subscription failed: ${status}`);
+            addToastRef.current('error', '学生回答の受信Channelに接続できません。Realtime設定と認可を確認してください。');
+            if (inboxReconnectTimeoutRef.current) {
+              clearTimeout(inboxReconnectTimeoutRef.current);
+            }
+            inboxReconnectTimeoutRef.current = setTimeout(() => {
+              if (teacherInboxRef.current) {
+                teacherInboxRef.current.subscribe(handleInboxStatus);
+              }
+            }, 10000);
+          }
+        };
+
         inbox
-      .on('broadcast', { event: 'student_to_teacher' }, (response) => {
+          .on('broadcast', { event: 'student_to_teacher' }, (response) => {
         const payload = response.payload;
         if (payload && payload.seatId && payload.status) {
           const receivedAt = new Date().toLocaleTimeString('ja-JP');
@@ -127,18 +167,23 @@ export function useTeacherRealtime({
             playAlertSound();
           }
         }
-      })
-      .subscribe();
+          })
+          .subscribe(handleInboxStatus);
 
         channel.subscribe((status) => {
+        if (cancelled) return;
         if (status === 'SUBSCRIBED') {
+          mainSubscribedRef.current = true;
+          updateRealtimeOnlineState();
           console.log(`[Teacher] Successfully subscribed to channel: ${roomId}`);
           channel.send({
             type: 'broadcast',
             event: 'teacher_lock_state',
             payload: { locked: isSeatLockedRef.current },
           });
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          mainSubscribedRef.current = false;
+          updateRealtimeOnlineState();
           console.warn(`[Teacher] Realtime subscription failed: ${status}. Scheduling auto-reconnect in 10s...`);
           if (reconnectTimeoutRef.current) {
             clearTimeout(reconnectTimeoutRef.current);
@@ -154,6 +199,9 @@ export function useTeacherRealtime({
         teacherChannelRef.current = channel;
         teacherInboxRef.current = inbox;
       } catch (err) {
+        mainSubscribedRef.current = false;
+        inboxSubscribedRef.current = false;
+        setIsOnline(false);
         console.error('[Teacher] Realtime authorization failed:', err);
         addToastRef.current('error', 'リアルタイム認証に失敗しました。再ログインしてください。');
       }
@@ -173,8 +221,12 @@ export function useTeacherRealtime({
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
+      if (inboxReconnectTimeoutRef.current) {
+        clearTimeout(inboxReconnectTimeoutRef.current);
+        inboxReconnectTimeoutRef.current = null;
+      }
     };
-  }, [supabase, roomId, realtimeToken, setLiveStatuses]);
+  }, [supabase, roomId, realtimeToken, setLiveStatuses, updateRealtimeOnlineState]);
 
   const sendTeacherResetBroadcast = useCallback(async (): Promise<'ok' | 'error'> => {
     const channel = teacherChannelRef.current;

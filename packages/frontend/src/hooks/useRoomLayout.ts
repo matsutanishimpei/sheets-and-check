@@ -111,10 +111,10 @@ export function useRoomLayout({
     }
   };
 
-  const saveClassroom = async () => {
+  const saveClassroom = async (): Promise<boolean> => {
     if (!roomName.trim()) {
       addToast('error', '教室名を入力してください');
-      return;
+      return false;
     }
 
     const rawUrl = supabaseUrl.trim() || supabaseConfig.getUrl();
@@ -123,14 +123,14 @@ export function useRoomLayout({
 
     if (!finalSupabaseUrl || !finalSupabaseAnonKey) {
       addToast('error', 'Supabase URL と Anon Key を設定してから保存してください');
-      return;
+      return false;
     }
     try {
       const parsedUrl = new URL(finalSupabaseUrl);
       if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) throw new Error();
     } catch {
       addToast('error', 'Supabase URL には有効な HTTPS URL を指定してください');
-      return;
+      return false;
     }
 
     setIsSaving(true);
@@ -163,10 +163,12 @@ export function useRoomLayout({
             activeRoom.save(roomId);
           } catch (e) {}
           fetchRooms();
+          return true;
         } else {
           const body = await readResponseBody(res);
           const errorMsg = extractErrorMessage(body, '不明なエラー');
           addToast('error', `保存に失敗しました: ${errorMsg}`);
+          return false;
         }
       } else {
         const res = await client.api.rooms.$post({
@@ -190,14 +192,17 @@ export function useRoomLayout({
           }
           addToast('success', `新規教室「${roomName}」を作成・保存しました！`);
           fetchRooms();
+          return true;
         } else {
           const body = await readResponseBody(res);
           const errorMsg = extractErrorMessage(body, '不明なエラー');
           addToast('error', `作成に失敗しました: ${errorMsg}`);
+          return false;
         }
       }
     } catch (err: any) {
       addToast('error', `通信エラーが発生しました: ${err.message}`);
+      return false;
     } finally {
       setIsSaving(false);
     }
