@@ -9,13 +9,13 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
   let mockRepo: InMemoryRoomRepository;
   let mockTeacherRepo: InMemoryTeacherRepository;
   let testApp: Hono<any, any, any>;
-  const teacherAuthorization = async (overrides: Record<string, unknown> = {}) => {
+  const teacherAuthorization = async (overrides: Record<string, unknown> = {}, secret = 'dev-app-jwt-secret-key-123') => {
     const token = await sign({
       sub: 'teacher-default-uuid',
       role: 'teacher',
       exp: Math.floor(Date.now() / 1000) + 3600,
       ...overrides,
-    }, 'dev-app-jwt-secret-key-123');
+    }, secret);
     return { Authorization: `Bearer ${token}` };
   };
 
@@ -428,6 +428,84 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
   });
 
   describe('Production fail-closed behavior', () => {
+    const productionJwtSecret = 'production-test-app-jwt-secret-not-default';
+    const configuredSupabaseUrl = 'https://test-sb-1.supabase.co';
+    const productionEnv = (supabaseUrl: string | null = configuredSupabaseUrl) => ({
+      ENVIRONMENT: 'production',
+      JWT_SECRET: productionJwtSecret,
+      ...(supabaseUrl === null ? {} : { SUPABASE_URL: supabaseUrl }),
+    });
+    const productionTeacherAuthorization = () => teacherAuthorization({}, productionJwtSecret);
+    const roomPayload = (supabaseUrl: string) => ({
+      name: 'Production room',
+      grid: [{ x: 2, y: 2, type: 'student' }],
+      supabaseUrl,
+      supabaseAnonKey: 'production-anon-key',
+      isActive: true,
+    });
+
+    it('creates a Room when its Supabase URL matches the production Worker project', async () => {
+      const response = await testApp.request('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
+        body: JSON.stringify(roomPayload(configuredSupabaseUrl)),
+      }, productionEnv());
+
+      expect(response.status).toBe(201);
+      expect(mockRepo.roomsTable).toHaveLength(2);
+      expect(mockRepo.roomsTable.some((room) => room.name === 'Production room')).toBe(true);
+    });
+
+    it('rejects Room creation for a different Supabase project without changing the Repository', async () => {
+      const before = structuredClone(mockRepo.roomsTable);
+      const response = await testApp.request('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
+        body: JSON.stringify(roomPayload('https://different-project.supabase.co')),
+      }, productionEnv());
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid' });
+      expect(mockRepo.roomsTable).toEqual(before);
+    });
+
+    it('rejects Room updates for a different Supabase project without changing the Repository', async () => {
+      const before = structuredClone(mockRepo.roomsTable);
+      const response = await testApp.request('/api/rooms/test-room-uuid-1', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
+        body: JSON.stringify({ ...roomPayload('https://different-project.supabase.co'), name: 'Rejected update' }),
+      }, productionEnv());
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid' });
+      expect(mockRepo.roomsTable).toEqual(before);
+    });
+
+    it('allows a trailing slash difference for the same production Supabase project', async () => {
+      const response = await testApp.request('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
+        body: JSON.stringify(roomPayload(`${configuredSupabaseUrl}/`)),
+      }, productionEnv());
+
+      expect(response.status).toBe(201);
+      expect(mockRepo.roomsTable.some((room) => room.supabaseUrl === `${configuredSupabaseUrl}/`)).toBe(true);
+    });
+
+    it('fails closed when production SUPABASE_URL is absent without changing the Repository', async () => {
+      const before = structuredClone(mockRepo.roomsTable);
+      const response = await testApp.request('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
+        body: JSON.stringify(roomPayload(configuredSupabaseUrl)),
+      }, productionEnv(null));
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Room storage is unavailable' });
+      expect(mockRepo.roomsTable).toEqual(before);
+    });
+
     it('does not issue login tokens when production secrets are absent', async () => {
       const response = await testApp.request('/api/auth/teacher/login', {
         method: 'POST',

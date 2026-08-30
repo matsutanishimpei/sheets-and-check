@@ -39,6 +39,18 @@ const MAX_ROOM_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_PRODUCTION_ORIGIN = 'https://seat-check.pages.dev';
 const isProduction = (env?: Bindings) => env?.ENVIRONMENT === 'production';
 
+const normalizeSupabaseUrl = (url: string) => url.trim().replace(/\/+$/, '');
+
+const validateRoomSupabaseProject = (env: Bindings | undefined, roomSupabaseUrl: string) => {
+  if (!isProduction(env)) return null;
+  const configuredUrl = env?.SUPABASE_URL?.trim();
+  if (!configuredUrl) return { status: 503 as const, error: 'Room storage is unavailable' };
+  if (normalizeSupabaseUrl(configuredUrl) !== normalizeSupabaseUrl(roomSupabaseUrl)) {
+    return { status: 400 as const, error: 'Room Supabase configuration is invalid' };
+  }
+  return null;
+};
+
 const getSecret = (env: Bindings | undefined, key: 'JWT_SECRET' | 'SUPABASE_JWT_SECRET'): string => {
   const fallback = key === 'JWT_SECRET' ? DEV_APP_SECRET : DEV_SUPABASE_SECRET;
   const configured = env?.[key]?.trim();
@@ -233,6 +245,8 @@ const routes = app
   .post('/api/rooms', requireTeacher, enforceRoomPayloadLimit, zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
     const body = c.req.valid('json');
     const id = crypto.randomUUID();
+    const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
+    if (configurationError) return c.json({ error: configurationError.error }, configurationError.status);
     try {
       await c.get('roomRepo').create({ id, name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false }, 201);
@@ -246,6 +260,8 @@ const routes = app
     const body = c.req.valid('json');
     try {
       if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
+      const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
+      if (configurationError) return c.json({ error: configurationError.error }, configurationError.status);
       await c.get('roomRepo').update(id, { name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false });
     } catch (err) {
