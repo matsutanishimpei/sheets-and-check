@@ -16,35 +16,34 @@ interface MonitorRealtimeLogsProps {
 }
 
 export const MonitorRealtimeLogs: React.FC<MonitorRealtimeLogsProps> = ({ realtimeLogs }) => {
-  const commentLogs = [...realtimeLogs.filter(log => log.comment && log.comment.trim() !== '')].reverse();
-
   return (
     <div className="card" style={{ width: '100%', maxWidth: '100%', flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: '320px', maxHeight: '480px' }}>
       <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-        <Activity size={18} style={{ color: 'var(--color-student)' }} /> リアルタイム質問・コメント
+        <Activity size={18} style={{ color: 'var(--color-student)' }} /> 直近の回答
       </h2>
       
-      {commentLogs.length === 0 ? (
+      {realtimeLogs.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '260px', flexDirection: 'column', gap: '0.75rem', color: 'var(--text-muted)' }}>
           <Radio size={32} />
           <p style={{ fontSize: '0.85rem', textAlign: 'center', margin: 0, lineHeight: 1.4 }}>
-            学生からのコメントや質問を<br />リアルタイムに待機しています...
+            学生からの回答を<br />リアルタイムに待機しています...
           </p>
         </div>
       ) : (
         <div className="activity-feed-container" style={{ flex: 1, overflowY: 'scroll', maxHeight: '380px', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {commentLogs.map((log) => (
+          {realtimeLogs.map((log) => (
             <div key={log.id} className={`feed-item ${log.status}`} style={{ margin: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{log.studentId || '-'}</span>
                   <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{log.studentName}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'var(--bg-deep)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>席 {log.seatId}</span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: log.status === 'ok' ? '#6A9478' : '#B5606A' }}>{log.status === 'ok' ? 'OK' : '要確認'}</span>
                 </div>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{log.timestamp}</span>
               </div>
               <p style={{ fontSize: '0.9rem', color: 'var(--text-primary)', margin: 0, lineHeight: 1.5, paddingLeft: '0.1rem' }}>
-                {log.comment}
+                {log.comment || 'コメントなし'}
               </p>
             </div>
           ))}

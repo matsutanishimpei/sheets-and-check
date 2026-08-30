@@ -3,11 +3,12 @@ name = "my-app-backend"
 main = "src/index.ts"
 compatibility_date = "2024-04-03"
 
+[vars]
+ENVIRONMENT = "production"
+ALLOWED_ORIGINS = "https://seat-check.pages.dev"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "my-db"
 database_id = "66fd0138-63fe-4e38-bb76-9e2e69e31e6f"
 migrations_dir = "migrations"
-
-# [vars]
-# MY_VARIABLE = "production_value"

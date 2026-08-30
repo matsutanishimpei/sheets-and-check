@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { RealtimeLog, LiveSeatStatus } from '@my-app/shared';
-import { realtimeLogs as logsStorage } from '../lib/storage';
 import { playAlertSound } from '../lib/audio';
+import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
 
 interface UseTeacherRealtimeProps {
   supabase: SupabaseClient | null;
+  realtimeToken: string;
   roomId: string | null;
   isSeatLocked: boolean;
   setLiveStatuses: React.Dispatch<React.SetStateAction<Record<string, LiveSeatStatus>>>;
@@ -14,6 +15,7 @@ interface UseTeacherRealtimeProps {
 
 export function useTeacherRealtime({
   supabase,
+  realtimeToken,
   roomId,
   isSeatLocked,
   setLiveStatuses,
@@ -22,14 +24,13 @@ export function useTeacherRealtime({
   const [realtimeLogs, setRealtimeLogs] = useState<RealtimeLog[]>([]);
   const [isOnline, setIsOnline] = useState(true);
   const teacherChannelRef = useRef<RealtimeChannel | null>(null);
+  const teacherInboxRef = useRef<RealtimeChannel | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
 
   const isSeatLockedRef = useRef(isSeatLocked);
-  const roomIdRef = useRef(roomId);
   const addToastRef = useRef(addToast);
 
   useEffect(() => { isSeatLockedRef.current = isSeatLocked; }, [isSeatLocked]);
-  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
   useEffect(() => { addToastRef.current = addToast; }, [addToast]);
 
   useEffect(() => {
@@ -46,56 +47,48 @@ export function useTeacherRealtime({
     window.addEventListener('offline', handleOffline);
 
     return () => {
-      window.addEventListener('online', handleOnline);
-      window.addEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
-  // Restore room-specific logs from LocalStorage
+  // Keep only the active class's latest responses in memory.
   useEffect(() => {
-    if (roomId) {
-      const saved = logsStorage.get<RealtimeLog[]>(roomId);
-      if (saved) {
-        setRealtimeLogs(saved);
-      } else {
-        setRealtimeLogs([]);
-      }
-    } else {
-      setRealtimeLogs([]);
-    }
+    setRealtimeLogs([]);
   }, [roomId]);
-
-  // Persist realtime logs to Local Storage when updated (Debounced to avoid disk I/O bottlenecks)
-  useEffect(() => {
-    if (!roomId) return;
-    const timer = setTimeout(() => {
-      if (realtimeLogs.length > 0) {
-        logsStorage.save(roomId, realtimeLogs);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [realtimeLogs, roomId]);
 
   useEffect(() => {
     if (teacherChannelRef.current) {
       teacherChannelRef.current.unsubscribe();
       teacherChannelRef.current = null;
     }
+    if (teacherInboxRef.current) {
+      teacherInboxRef.current.unsubscribe();
+      teacherInboxRef.current = null;
+    }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
 
-    if (!supabase || !roomId) return;
+    if (!supabase || !roomId || !realtimeToken) return;
+    let cancelled = false;
 
-    const channel = supabase.channel(`room:${roomId}`, {
-      config: { broadcast: { self: true } },
-    });
+    void (async () => {
+      try {
+        const channel = await createAuthorizedPrivateChannel(supabase, realtimeToken, `room:${roomId}`);
+        const inbox = await createAuthorizedPrivateChannel(supabase, realtimeToken, `room:${roomId}:teacher`);
+        if (cancelled) {
+          void supabase.removeChannel(channel);
+          void supabase.removeChannel(inbox);
+          return;
+        }
 
-    channel
+        inbox
       .on('broadcast', { event: 'student_to_teacher' }, (response) => {
         const payload = response.payload;
         if (payload && payload.seatId && payload.status) {
+          const receivedAt = new Date().toLocaleTimeString('ja-JP');
           setLiveStatuses((prev) => {
             const nextStatuses = { ...prev };
             if (payload.status === 'none') {
@@ -105,34 +98,39 @@ export function useTeacherRealtime({
                 status: payload.status,
                 name: payload.studentName || '匿名',
                 studentId: payload.studentId || '不明',
-                responseTime: typeof payload.responseTime === 'number' ? payload.responseTime : undefined,
                 comment: payload.comment || undefined,
+                answeredAt: receivedAt,
               };
             }
             return nextStatuses;
           });
 
-          const logItem: RealtimeLog = {
-            id: crypto.randomUUID(),
-            studentName: payload.studentName || '匿名',
-            studentId: payload.studentId || '不明',
-            responseTime: typeof payload.responseTime === 'number' ? payload.responseTime : undefined,
-            seatId: payload.seatId,
-            status: payload.status,
-            comment: payload.comment || undefined,
-            timestamp: new Date().toLocaleTimeString(),
-          };
-          setRealtimeLogs((prev) => {
-            const nextLogs = [logItem, ...prev].slice(0, 50);
-            return nextLogs;
-          });
+          if (payload.status === 'none') {
+            setRealtimeLogs((prev) => prev.filter((log) => log.seatId !== payload.seatId));
+          } else {
+            const logItem: RealtimeLog = {
+              id: crypto.randomUUID(),
+              studentName: payload.studentName || '匿名',
+              studentId: payload.studentId || '不明',
+              seatId: payload.seatId,
+              status: payload.status,
+              comment: payload.comment || undefined,
+              timestamp: receivedAt,
+            };
+            setRealtimeLogs((prev) => [
+              logItem,
+              ...prev.filter((log) => log.seatId !== payload.seatId),
+            ]);
+          }
 
           if (payload.status === 'ng') {
             playAlertSound();
           }
         }
       })
-      .subscribe((status) => {
+      .subscribe();
+
+        channel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           console.log(`[Teacher] Successfully subscribed to channel: ${roomId}`);
           channel.send({
@@ -151,21 +149,32 @@ export function useTeacherRealtime({
             }
           }, 10000);
         }
-      });
+        });
 
-    teacherChannelRef.current = channel;
+        teacherChannelRef.current = channel;
+        teacherInboxRef.current = inbox;
+      } catch (err) {
+        console.error('[Teacher] Realtime authorization failed:', err);
+        addToastRef.current('error', 'リアルタイム認証に失敗しました。再ログインしてください。');
+      }
+    })();
 
     return () => {
+      cancelled = true;
       if (teacherChannelRef.current) {
         teacherChannelRef.current.unsubscribe();
         teacherChannelRef.current = null;
+      }
+      if (teacherInboxRef.current) {
+        teacherInboxRef.current.unsubscribe();
+        teacherInboxRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
     };
-  }, [supabase, roomId, setLiveStatuses]);
+  }, [supabase, roomId, realtimeToken, setLiveStatuses]);
 
   const sendTeacherResetBroadcast = useCallback(async (): Promise<'ok' | 'error'> => {
     const channel = teacherChannelRef.current;
@@ -179,9 +188,6 @@ export function useTeacherRealtime({
       });
       if (res === 'ok') {
         setRealtimeLogs([]);
-        if (roomIdRef.current) {
-          logsStorage.remove(roomIdRef.current);
-        }
       }
       return res === 'ok' ? 'ok' : 'error';
     } catch (err) {

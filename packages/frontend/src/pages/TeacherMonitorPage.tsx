@@ -1,11 +1,9 @@
 import React, { useEffect } from 'react';
-import { LogOut, MonitorPlay, FolderOpen, RotateCcw, Database, QrCode, Download, Trash2, Activity, LayoutGrid, Radio, AlertTriangle } from 'lucide-react';
+import { MonitorPlay } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useTeacherSession } from '../hooks/useTeacherSession';
-import { useResponseArchive } from '../hooks/useResponseArchive';
 import { SeatMap } from '../components/SeatMap';
 import client from '../lib/hc';
-import { responseArchive } from '../lib/storage';
 import { initAudioOnInteraction } from '../lib/audio';
 import { useRequireAuth, useLogout } from '../hooks/useRequireAuth';
 import { TeacherHeader } from '../components/layout/TeacherHeader';
@@ -28,56 +26,12 @@ export const TeacherMonitorPage: React.FC = () => {
     return initAudioOnInteraction();
   }, []);
 
-  const {
-    archiveCurrentStatuses,
-    handleExportCSV,
-    handleClearSavedResponses,
-  } = useResponseArchive(session.roomId, session.roomName, session.liveStatuses);
-
-  // ── Classroom loading with day-change history detection ──
-  const handleLoadClassroom = async (id: string) => {
-    if (!id) {
-      session.loadClassroom('');
-      return;
-    }
-
-    const lastSavedDateStr = responseArchive.getDate(id);
-    const hasHistory = responseArchive.get(id) !== null;
-
-    if (hasHistory && lastSavedDateStr) {
-      const todayStr = new Date().toDateString();
-      if (lastSavedDateStr !== todayStr) {
-        try {
-          const formattedDate = new Date(lastSavedDateStr).toLocaleDateString('ja-JP', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            weekday: 'short'
-          });
-
-          const confirmClear = window.confirm(
-            `【異なる講義日の履歴を検知】\n前回（${formattedDate}）の質問回答履歴がブラウザに残っています。\n\n本日の新しい講義を開始するために、前回の履歴をクリアしますか？\n（※まだCSVを出力していない場合は「キャンセル」を押して、先にCSVをダウンロードしてください）`
-          );
-
-          if (confirmClear) {
-            responseArchive.remove(id);
-            responseArchive.removeDate(id);
-            addToast('success', '前回の質問履歴をクリアし、本日の新しい講義セッションを開始しました。');
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    }
-
-    session.loadClassroom(id);
-  };
+  const handleLoadClassroom = (id: string) => session.loadClassroom(id);
 
   const onHandleBulkReset = () => {
-    archiveCurrentStatuses();
     const ok = session.handleBulkReset();
     if (ok) {
-      addToast('success', '前の回答を質問履歴に保存し、新しい質問を開始しました！');
+      addToast('success', 'みんなの回答をクリアし、新しい質問を開始しました！');
     }
   };
 
@@ -120,8 +74,6 @@ export const TeacherMonitorPage: React.FC = () => {
           isActive={session.isActive}
           onLoadClassroom={handleLoadClassroom}
           onBulkReset={onHandleBulkReset}
-          onExportCSV={handleExportCSV}
-          onClearSavedResponses={handleClearSavedResponses}
           onToggleActive={handleToggleActive}
         />
 

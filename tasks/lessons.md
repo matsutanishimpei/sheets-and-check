@@ -29,14 +29,6 @@
   3. Only include truly identity-stable values in deps (e.g., `supabase` client instance, `roomId` string).
   4. Wrap frequently-used callbacks like `addToast` in `useCallback(…, [])` at the definition site.
 
-## 6. LocalStorage-Based Multi-Session Analytics & CSV Export (Pattern A)
-- **Problem**: Capturing student response times and session histories in educational settings normally requires massive backend tables, indexing, and high write volumes (DB write storm) whenever students submit multiple OK/NG statuses. Furthermore, identifying students via raw manually typed names inevitably breaks data correlation due to spelling/spacing inconsistencies.
-- **Solution**: 
-  1. Enforce strict character-level input validation on Student ID at input time (e.g., regex-guided filtering, auto-uppercase).
-  2. Implement precise client-side latency tracking (milliseconds) starting from dashboard load, resetting upon subsequent submissions.
-  3. Rather than writing every single real-time event to the cloud DB, archive completed session snapshots to the teacher's browser `localStorage` upon bulk-clearing ("状態クリア ＆ 質問保存").
-  4. Perform data pivoting and aggregation entirely in frontend JavaScript to build a highly optimized, Excel-compatible CSV output with BOM (`[0xEF, 0xBB, 0xBF]`) to completely prevent UTF-8 encoding garbles in Japanese spreadsheets.
-
 ## 7. Realtime Broadcast Stale State Trap (React Asynchronous Batching)
 - **Failure mode**: When a user clicks a button to update local state (e.g., `setStudentComment('[順調]...')`) and immediately triggers a broadcast transmission function (`handleSend('ok')`) on the next line, the broadcast payload sends the **old, un-updated state value** (such as an empty string). The updated message only transmits upon a second button tap.
 - **Root cause**: React state updater functions operate asynchronously (state batching). At the exact moment `handleSend` executes, the parent component's `studentComment` variable has not yet re-rendered with the new value.

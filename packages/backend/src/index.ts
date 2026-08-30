@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
 import { zValidator } from '@hono/zod-validator';
-import { SaveRoomLayoutInputSchema, TeacherLoginInputSchema } from '@my-app/shared';
+import { SaveRoomLayoutInputSchema, StudentEventInputSchema, TeacherLoginInputSchema } from '@my-app/shared';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { sign, verify } from 'hono/jwt';
-import { rateLimiter } from 'hono-rate-limiter';
 import { IRoomRepository } from './repositories/RoomRepository';
 import { DrizzleRoomRepository } from './repositories/DrizzleRoomRepository';
 import { TeacherRepository } from './repositories/TeacherRepository';
@@ -14,10 +14,14 @@ import { drizzle } from 'drizzle-orm/d1';
 
 type Bindings = {
   DB: D1Database;
-  JWT_SECRET: string;
-  SUPABASE_JWT_SECRET: string;
+  JWT_SECRET?: string;
+  SUPABASE_JWT_SECRET?: string;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
   INITIAL_TEACHER_USERNAME?: string;
   INITIAL_TEACHER_PASSWORD?: string;
+  ENVIRONMENT?: string;
+  ALLOWED_ORIGINS?: string;
 };
 
 type Variables = {
@@ -27,469 +31,308 @@ type Variables = {
 };
 
 type AppEnv = { Bindings: Bindings; Variables: Variables };
-
 const app = new Hono<AppEnv>();
 
-// Enable secure dynamic CORS for local dev and Cloudflare Pages deployments
-app.use(
-  '*',
-  cors({
-    origin: (origin) => {
-      if (!origin) return 'https://seat-check.pages.dev';
-      // Dynamically allow local development and any Cloudflare Pages deployments (including preview URLs)
-      if (
-        origin.endsWith('.pages.dev') ||
-        origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:')
-      ) {
-        return origin;
-      }
-      return 'https://seat-check.pages.dev';
-    },
-    allowHeaders: ['Content-Type', 'Authorization'],
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    maxAge: 600,
-    credentials: true,
-  })
-);
+const DEV_APP_SECRET = 'dev-app-jwt-secret-key-123';
+const DEV_SUPABASE_SECRET = 'dev-supabase-jwt-secret-key-456';
+const MAX_ROOM_PAYLOAD_BYTES = 64 * 1024;
+const DEFAULT_PRODUCTION_ORIGIN = 'https://seat-check.pages.dev';
+const isProduction = (env?: Bindings) => env?.ENVIRONMENT === 'production';
 
-// Rate limiter configuration for all /api endpoints to protect DB against brute-forcing/spamming.
-// Construct it lazily so Cloudflare doesn't evaluate the middleware's internal setup in global scope.
-const createApiRateLimiter = () =>
-  rateLimiter<AppEnv>({
-    windowMs: 10 * 1000, // 10 seconds window
-    limit: 1, // Limit each IP to 1 request per 10 seconds
-    standardHeaders: 'draft-6', // Return standard rate limit info in headers
-    keyGenerator: (c) => {
-      // Bypass rate limiting entirely during unit/integration tests to prevent test pollution
-      const isTestEnv =
-        (c.env && 'JWT_SECRET' in c.env && c.env.JWT_SECRET === 'dev-app-jwt-secret-key-123') ||
-        (typeof (globalThis as any).process !== 'undefined' && (globalThis as any).process.env?.NODE_ENV === 'test') ||
-        (typeof (globalThis as any).describe === 'function');
-
-      if (isTestEnv) {
-        return `bypass-${Math.random()}`; // Give each request a unique key to bypass limits in test runs
-      }
-
-      // Dynamic IP extraction compatible with Cloudflare Workers context
-      const cfConnectingIp = c.req.header('cf-connecting-ip');
-      if (cfConnectingIp) return cfConnectingIp;
-
-      // Fallback context details
-      return c.req.header('x-real-ip') || c.req.header('x-forwarded-for') || 'anonymous-ip';
-    },
-    handler: (c, next) => {
-      c.status(429);
-      return c.json({
-        error: 'リクエスト頻度が高すぎます。10秒以上間隔を空けて再試行してください。',
-        retryAfter: 10,
-      });
-    },
-  });
-
-// Apply rate limiter middleware only to the student check-in endpoint to protect against spamming
-let apiRateLimiter: ReturnType<typeof createApiRateLimiter> | undefined;
-app.use('/api/rooms/:id/student-token', async (c, next) => {
-  apiRateLimiter ??= createApiRateLimiter();
-  return apiRateLimiter(c, next);
-});
-
-// Teacher Authentication Helper (Avoids breaking Hono RPC chain inference)
-const verifyTeacher = async (c: any) => {
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    throw new Error('認証トークンが見つかりません。再ログインしてください。');
+const getSecret = (env: Bindings | undefined, key: 'JWT_SECRET' | 'SUPABASE_JWT_SECRET'): string => {
+  const fallback = key === 'JWT_SECRET' ? DEV_APP_SECRET : DEV_SUPABASE_SECRET;
+  const configured = env?.[key]?.trim();
+  if (isProduction(env)) {
+    if (!configured || configured === fallback) throw new Error(`${key} is not securely configured`);
+    return configured;
   }
+  return configured || fallback;
+};
 
-  const token = authHeader.substring(7);
-  const jwtSecret = c.env?.JWT_SECRET || 'dev-app-jwt-secret-key-123';
+const getAllowedOrigins = (env?: Bindings): string[] => {
+  if (!isProduction(env)) return [DEFAULT_PRODUCTION_ORIGIN];
+  const configured = env?.ALLOWED_ORIGINS?.split(',').map((value) => value.trim()).filter(Boolean);
+  return configured?.length ? configured : [DEFAULT_PRODUCTION_ORIGIN];
+};
 
-  try {
-    const payload = await verify(token, jwtSecret, 'HS256');
-    if (payload.role !== 'teacher') {
-      throw new Error('権限がありません。教員アカウントが必要です。');
+app.use('*', cors({
+  origin: (origin, c) => {
+    if (!origin) return '';
+    if (getAllowedOrigins(c.env).includes(origin)) return origin;
+    if (!isProduction(c.env)) {
+      try {
+        const parsed = new URL(origin);
+        if (parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')) return origin;
+      } catch {
+        return '';
+      }
     }
+    return '';
+  },
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  maxAge: 600,
+  credentials: true,
+}));
+
+const internalError = (c: Context<AppEnv>, publicMessage: string, err: unknown) => {
+  console.error(publicMessage, err);
+  const response: { error: string; message?: string } = { error: publicMessage };
+  if (!isProduction(c.env) && err instanceof Error) response.message = err.message;
+  return c.json(response, 500);
+};
+
+const verifyTeacher = async (c: Context<AppEnv>) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) throw new Error('Unauthorized');
+  try {
+    const payload = await verify(authHeader.slice(7), getSecret(c.env, 'JWT_SECRET'), 'HS256');
+    if (payload.role !== 'teacher') throw new Error('Unauthorized');
     return payload;
-  } catch (err) {
-    throw new Error('有効期限切れ、または無効な認証トークンです。再ログインしてください。');
+  } catch {
+    throw new Error('Unauthorized');
   }
 };
 
-// Inject repositories dependency via middleware
+const requireTeacher = async (c: Context<AppEnv>, next: Next) => {
+  try {
+    c.set('teacherAuthUser', await verifyTeacher(c));
+    await next();
+  } catch {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+};
+
+const enforceRoomPayloadLimit = async (c: Context<AppEnv>, next: Next) => {
+  const declaredLength = Number(c.req.header('content-length') || '0');
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ROOM_PAYLOAD_BYTES) return c.json({ error: 'Payload Too Large' }, 413);
+  if ((await c.req.raw.clone().arrayBuffer()).byteLength > MAX_ROOM_PAYLOAD_BYTES) return c.json({ error: 'Payload Too Large' }, 413);
+  await next();
+};
+
+// Per-isolate failed-login limiter. Student check-ins are deliberately not IP-throttled.
+const failedLogins = new Map<string, number[]>();
+const LOGIN_WINDOW_MS = 60_000;
+const LOGIN_FAILURE_LIMIT = 5;
+const loginKey = (c: Context<AppEnv>, username: string) => {
+  const ip = c.req.header('cf-connecting-ip') || c.req.header('x-real-ip') || c.req.header('x-forwarded-for') || 'unknown';
+  return `${ip}:${username.trim().toLowerCase()}`;
+};
+const recentFailures = (key: string, now = Date.now()) => (failedLogins.get(key) || []).filter((timestamp) => now - timestamp < LOGIN_WINDOW_MS);
+const isLoginBlocked = (key: string) => {
+  const failures = recentFailures(key);
+  failedLogins.set(key, failures);
+  return failures.length >= LOGIN_FAILURE_LIMIT;
+};
+const recordLoginFailure = (key: string) => failedLogins.set(key, [...recentFailures(key), Date.now()]);
+
 app.use('*', async (c, next) => {
-  // Live environment injection (if not already injected by test setups)
   if (!c.get('roomRepo') || !c.get('teacherRepo')) {
     const db = drizzle(c.env.DB);
-    if (!c.get('roomRepo')) {
-      c.set('roomRepo', new DrizzleRoomRepository(db));
-    }
-    if (!c.get('teacherRepo')) {
-      c.set('teacherRepo', new DrizzleTeacherRepository(db));
-    }
+    if (!c.get('roomRepo')) c.set('roomRepo', new DrizzleRoomRepository(db));
+    if (!c.get('teacherRepo')) c.set('teacherRepo', new DrizzleTeacherRepository(db));
   }
 
-  // Self-healing / Dynamic Seeding: Ensure at least one teacher exists dynamically at boot time
-  const teacherRepo = c.get('teacherRepo');
-  if (teacherRepo) {
-    try {
-      const list = await teacherRepo.listAll();
-      if (list.length === 0) {
-        const username = c.env?.INITIAL_TEACHER_USERNAME || 'teacher_admin';
-        const password = c.env?.INITIAL_TEACHER_PASSWORD || 'admin123';
-        const passwordHash = await bcrypt.hash(password, 10);
-        await teacherRepo.create({
-          id: 'teacher-default-uuid',
-          username,
-          passwordHash,
-        });
+  try {
+    const teacherRepo = c.get('teacherRepo');
+    if ((await teacherRepo.listAll()).length === 0) {
+      const username = isProduction(c.env) ? c.env?.INITIAL_TEACHER_USERNAME?.trim() : c.env?.INITIAL_TEACHER_USERNAME?.trim() || 'teacher_admin';
+      const password = isProduction(c.env) ? c.env?.INITIAL_TEACHER_PASSWORD : c.env?.INITIAL_TEACHER_PASSWORD || 'admin123';
+      if (username && password && (!isProduction(c.env) || password !== 'admin123')) {
+        await teacherRepo.create({ id: crypto.randomUUID(), username, passwordHash: await bcrypt.hash(password, 10) });
+      } else if (isProduction(c.env)) {
+        console.error('Initial teacher was not created: secure production credentials are required');
       }
-    } catch (err) {
-      console.error('Failed to auto-seed default teacher account:', err);
     }
+  } catch (err) {
+    console.error('Failed to initialize teacher account:', err);
   }
-
   await next();
 });
 
-// Chain routes to export AppType for full Hono RPC client support
+const StudentTokenInputSchema = z.object({
+  studentId: z.string().trim().regex(/^[A-Z0-9]{5,15}$/i),
+  name: z.string().trim().min(1).max(100),
+}).strict();
+
 const routes = app
-  // 0. GET /api/hello - Health check endpoint
-  .get('/api/hello', (c) => {
-    return c.json({ message: 'Hello Hono!' });
-  })
+  .get('/api/hello', (c) => c.json({ message: 'Hello Hono!' }))
 
-  // 1. GET /api/rooms/:id - Fetch classroom layout
   .get('/api/rooms/:id', async (c) => {
-    const id = c.req.param('id');
-    const repo = c.get('roomRepo');
-    
     try {
-      const room = await repo.findById(id);
-
-      if (!room) {
-        return c.json({ error: 'Room not found' }, 404);
-      }
-
-      return c.json({
-        id: room.id,
-        name: room.name,
-        grid: room.grid,
-        isActive: room.isActive,
-        supabaseUrl: room.supabaseUrl || '',
-        supabaseAnonKey: room.supabaseAnonKey || '',
-      });
-    } catch (err: any) {
-      return c.json({ error: 'Internal Server Error', message: err.message }, 500);
+      const room = await c.get('roomRepo').findById(c.req.param('id'));
+      if (!room) return c.json({ error: 'Room not found' }, 404);
+      return c.json({ id: room.id, name: room.name, grid: room.grid, isActive: room.isActive, supabaseUrl: room.supabaseUrl || '', supabaseAnonKey: room.supabaseAnonKey || '' });
+    } catch (err) {
+      return internalError(c, 'Internal Server Error', err);
     }
   })
 
-  // 2. POST /api/rooms - Create new classroom layout (generates UUID)
-  .post('/api/rooms', zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
-    const body = c.req.valid('json');
-    const id = crypto.randomUUID();
-    const repo = c.get('roomRepo');
-
-    try {
-      await repo.create({
-        id,
-        name: body.name,
-        grid: body.grid,
-        supabaseUrl: body.supabaseUrl || null,
-        supabaseAnonKey: body.supabaseAnonKey || null,
-        isActive: body.isActive !== false,
-      });
-
-      return c.json({
-        id,
-        name: body.name,
-        grid: body.grid,
-        isActive: body.isActive !== false,
-        supabaseUrl: body.supabaseUrl,
-        supabaseAnonKey: body.supabaseAnonKey,
-      }, 201);
-    } catch (err: any) {
-      return c.json({ error: 'Failed to create room', message: err.message }, 500);
-    }
-  })
-
-  // 3. PUT /api/rooms/:id - Update existing classroom layout
-  .put('/api/rooms/:id', zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
-    const id = c.req.param('id');
-    const body = c.req.valid('json');
-    const repo = c.get('roomRepo');
-
-    try {
-      const exists = await repo.exists(id);
-
-      if (!exists) {
-        return c.json({ error: 'Room not found' }, 404);
-      }
-
-      await repo.update(id, {
-        name: body.name,
-        grid: body.grid,
-        supabaseUrl: body.supabaseUrl || null,
-        supabaseAnonKey: body.supabaseAnonKey || null,
-        isActive: body.isActive !== false,
-      });
-
-      return c.json({
-        id,
-        name: body.name,
-        grid: body.grid,
-        isActive: body.isActive !== false,
-        supabaseUrl: body.supabaseUrl,
-        supabaseAnonKey: body.supabaseAnonKey,
-      });
-    } catch (err: any) {
-      return c.json({ error: 'Failed to update room', message: err.message }, 500);
-    }
-  })
-
-  // 3.5. PATCH /api/rooms/:id/status - Lightweight status toggle (Open/Closed)
-  .patch('/api/rooms/:id/status', zValidator('json', z.object({ isActive: z.boolean() })), async (c) => {
-    const id = c.req.param('id');
-    const body = c.req.valid('json');
-    const repo = c.get('roomRepo');
-
-    try {
-      const exists = await repo.exists(id);
-
-      if (!exists) {
-        return c.json({ error: 'Room not found' }, 404);
-      }
-
-      await repo.updateStatus(id, body.isActive);
-
-      return c.json({
-        id,
-        isActive: body.isActive,
-      });
-    } catch (err: any) {
-      return c.json({ error: 'Failed to update status', message: err.message }, 500);
-    }
-  })
-
-  // 4. GET /api/rooms - List all saved rooms
-  .get('/api/rooms', async (c) => {
-    const repo = c.get('roomRepo');
-    try {
-      const results = await repo.listAll();
-      const mapped = results.map(r => ({
-        id: r.id,
-        name: r.name,
-        supabaseUrl: r.supabaseUrl || '',
-        supabaseAnonKey: r.supabaseAnonKey || '',
-      }));
-      return c.json({ rooms: mapped });
-    } catch (err: any) {
-      return c.json({ error: 'Failed to fetch rooms', message: err.message }, 500);
-    }
-  })
-
-  // 5. DELETE /api/rooms/:id - Physically delete a classroom layout
-  .delete('/api/rooms/:id', async (c) => {
-    const id = c.req.param('id');
-    const repo = c.get('roomRepo');
-
-    try {
-      const exists = await repo.exists(id);
-
-      if (!exists) {
-        return c.json({ error: 'Room not found' }, 404);
-      }
-
-      await repo.delete(id);
-
-      return c.json({ success: true, id });
-    } catch (err: any) {
-      return c.json({ error: 'Failed to delete room', message: err.message }, 500);
-    }
-  })
-
-  // 6. POST /api/auth/teacher/login - Teacher credentials validation and JWT token issuance
-  .post('/api/auth/teacher/login', zValidator('json', TeacherLoginInputSchema), async (c) => {
-    const { username, password } = c.req.valid('json');
-    const repo = c.get('teacherRepo');
-
-    try {
-      const teacher = await repo.findByUsername(username);
-      if (!teacher) {
-        return c.json({ error: 'ユーザー名またはパスワードが正しくありません' }, 401);
-      }
-
-      // Verify password hash via bcrypt
-      const isMatch = await bcrypt.compare(password, teacher.passwordHash);
-      if (!isMatch) {
-        return c.json({ error: 'ユーザー名またはパスワードが正しくありません' }, 401);
-      }
-
-      // 最終ログイン日時を更新
-      await repo.updateLastLogin(teacher.id, new Date().toISOString());
-
-      // Generate standard Teacher Auth JWT
-      const jwtSecret = c.env?.JWT_SECRET || 'dev-app-jwt-secret-key-123';
-      const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24; // 24 hours
-      const token = await sign(
-        {
-          sub: teacher.id,
-          username: teacher.username,
-          role: 'teacher',
-          exp: expiresAt,
-        },
-        jwtSecret
-      );
-
-      // Generate custom Supabase Access Token (Approach B)
-      const supabaseJwtSecret = c.env?.SUPABASE_JWT_SECRET || 'dev-supabase-jwt-secret-key-456';
-      const supabaseExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 12; // 12 hours
-      const supabaseToken = await sign(
-        {
-          role: 'authenticated', // Supabase custom real-time auth role
-          iss: 'supabase',
-          exp: supabaseExpiresAt,
-          user_role: 'teacher',
-          userId: teacher.id,
-        },
-        supabaseJwtSecret
-      );
-
-      return c.json({
-        token,
-        supabaseToken,
-        teacher: {
-          id: teacher.id,
-          username: teacher.username,
-        }
-      });
-    } catch (err: any) {
-      console.error('LOGIN ERROR DETECTED:', err);
-      return c.json({ error: 'Internal Server Error', message: err.message }, 500);
-    }
-  })
-
-  // 7. POST /api/rooms/:id/student-token - Issue custom Supabase access token for checking-in student
-  .post('/api/rooms/:id/student-token', zValidator('json', z.object({
-    studentId: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-  })), async (c) => {
+  .post('/api/rooms/:id/student-token', zValidator('json', StudentTokenInputSchema), async (c) => {
     const roomId = c.req.param('id');
     const { studentId, name } = c.req.valid('json');
-    const roomRepo = c.get('roomRepo');
-
     try {
-      const exists = await roomRepo.exists(roomId);
-      if (!exists) {
-        return c.json({ error: '指定された教室が見つかりません' }, 404);
+      const room = await c.get('roomRepo').findById(roomId);
+      if (!room) return c.json({ error: '指定された教室が見つかりません' }, 404);
+      if (!room.isActive) return c.json({ error: 'Forbidden' }, 403);
+      const now = Math.floor(Date.now() / 1000);
+      const supabaseToken = await sign({
+        role: 'authenticated', aud: 'authenticated', iss: 'supabase', iat: now, exp: now + 21_600,
+        sub: `student:${roomId}:${studentId}`, user_role: 'student', studentId, name, roomId,
+      }, getSecret(c.env, 'SUPABASE_JWT_SECRET'));
+      return c.json({ supabaseToken, studentId, name, roomId });
+    } catch (err) {
+      return internalError(c, 'Student token could not be issued', err);
+    }
+  })
+
+  .post('/api/rooms/:id/student-event', zValidator('json', StudentEventInputSchema), async (c) => {
+    const roomId = c.req.param('id');
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) return c.json({ error: 'Unauthorized' }, 401);
+    try {
+      const claims = await verify(authHeader.slice(7), getSecret(c.env, 'SUPABASE_JWT_SECRET'), 'HS256');
+      if (claims.user_role !== 'student' || claims.role !== 'authenticated' || claims.roomId !== roomId || typeof claims.studentId !== 'string' || typeof claims.name !== 'string') {
+        return c.json({ error: 'Unauthorized' }, 401);
       }
-
-      // Generate lightweight Student Supabase Token (Approach B)
-      const supabaseJwtSecret = c.env?.SUPABASE_JWT_SECRET || 'dev-supabase-jwt-secret-key-456';
-      const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 6; // 6 hours
-      const supabaseToken = await sign(
-        {
-          role: 'anon', // Standard public anonymous role
-          iss: 'supabase',
-          exp: expiresAt,
-          user_role: 'student',
-          studentId,
-          name,
-          roomId,
-        },
-        supabaseJwtSecret
-      );
-
-      return c.json({
-        supabaseToken,
-        studentId,
-        name,
-        roomId
+      const room = await c.get('roomRepo').findById(roomId);
+      if (!room || !room.isActive) return c.json({ error: 'Forbidden' }, 403);
+      const configuredUrl = c.env?.SUPABASE_URL?.replace(/\/$/, '');
+      const roomUrl = room.supabaseUrl?.replace(/\/$/, '');
+      const serviceKey = c.env?.SUPABASE_SERVICE_ROLE_KEY?.trim();
+      if (!configuredUrl || !serviceKey || configuredUrl !== roomUrl) throw new Error('Supabase relay configuration is missing or does not match the room');
+      const relayTopic = `room:${roomId}:teacher`;
+      const relayResponse = await fetch(`${configuredUrl}/realtime/v1/api/broadcast/${encodeURIComponent(relayTopic)}/events/student_to_teacher?private=true`, {
+        method: 'POST',
+        headers: { apikey: serviceKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...c.req.valid('json'),
+          studentId: claims.studentId,
+          studentName: claims.name,
+          updatedAt: new Date().toISOString(),
+        }),
       });
-    } catch (err: any) {
-      console.error('STUDENT TOKEN ERROR DETECTED:', err);
-      return c.json({ error: 'Internal Server Error', message: err.message }, 500);
+      if (!relayResponse.ok) throw new Error(`Supabase broadcast failed with ${relayResponse.status}`);
+      return c.json({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message.toLowerCase() : '';
+      if (message.includes('token') || message.includes('signature') || message.includes('expired')) return c.json({ error: 'Unauthorized' }, 401);
+      return internalError(c, 'Student event could not be delivered', err);
     }
   })
-  
-  // 👥 Teacher Account Management (Phase 17 CRUD)
-  .get('/api/teachers', async (c) => {
-    try {
-      await verifyTeacher(c);
-    } catch (err: any) {
-      return c.json({ error: err.message }, 401);
-    }
 
-    const repo = c.get('teacherRepo');
+  .get('/api/rooms', requireTeacher, async (c) => {
     try {
-      const teachers = await repo.listAll();
-      return c.json({ teachers });
-    } catch (err: any) {
-      return c.json({ error: '教員一覧の取得に失敗しました', message: err.message }, 500);
+      const rooms = (await c.get('roomRepo').listAll()).map((room) => ({ ...room, supabaseUrl: room.supabaseUrl || '', supabaseAnonKey: room.supabaseAnonKey || '' }));
+      return c.json({ rooms });
+    } catch (err) {
+      return internalError(c, 'Failed to fetch rooms', err);
     }
   })
-  .post('/api/teachers', zValidator('json', TeacherLoginInputSchema), async (c) => {
+
+  .post('/api/rooms', requireTeacher, enforceRoomPayloadLimit, zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
+    const body = c.req.valid('json');
+    const id = crypto.randomUUID();
     try {
-      await verifyTeacher(c);
-    } catch (err: any) {
-      return c.json({ error: err.message }, 401);
-    }
-
-    const { username, password } = c.req.valid('json');
-    const repo = c.get('teacherRepo');
-
-    try {
-      const exists = await repo.findByUsername(username);
-      if (exists) {
-        return c.json({ error: 'このユーザー名はすでに登録されています' }, 400);
-      }
-
-      const passwordHash = await bcrypt.hash(password, 10);
-      const id = crypto.randomUUID();
-
-      await repo.create({
-        id,
-        username,
-        passwordHash,
-      });
-
-      return c.json({
-        success: true,
-        teacher: { id, username }
-      }, 201);
-    } catch (err: any) {
-      return c.json({ error: '教員の登録に失敗しました', message: err.message }, 500);
+      await c.get('roomRepo').create({ id, name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
+      return c.json({ id, ...body, isActive: body.isActive !== false }, 201);
+    } catch (err) {
+      return internalError(c, 'Failed to create room', err);
     }
   })
-  .delete('/api/teachers/:id', async (c) => {
-    let currentUser;
+
+  .put('/api/rooms/:id', requireTeacher, enforceRoomPayloadLimit, zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
+    const id = c.req.param('id')!;
+    const body = c.req.valid('json');
     try {
-      currentUser = await verifyTeacher(c);
-    } catch (err: any) {
-      return c.json({ error: err.message }, 401);
+      if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
+      await c.get('roomRepo').update(id, { name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
+      return c.json({ id, ...body, isActive: body.isActive !== false });
+    } catch (err) {
+      return internalError(c, 'Failed to update room', err);
     }
+  })
 
-    const id = c.req.param('id');
-    const repo = c.get('teacherRepo');
-
+  .patch('/api/rooms/:id/status', requireTeacher, zValidator('json', z.object({ isActive: z.boolean() }).strict()), async (c) => {
+    const id = c.req.param('id')!;
+    const { isActive: active } = c.req.valid('json');
     try {
-      if (currentUser && currentUser.sub === id) {
-        return c.json({ error: '現在ログイン中の自分自身のアカウントを削除することはできません' }, 400);
-      }
+      if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
+      await c.get('roomRepo').updateStatus(id, active);
+      return c.json({ id, isActive: active });
+    } catch (err) {
+      return internalError(c, 'Failed to update status', err);
+    }
+  })
 
-      await repo.delete(id);
+  .delete('/api/rooms/:id', requireTeacher, async (c) => {
+    const id = c.req.param('id')!;
+    try {
+      if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
+      await c.get('roomRepo').delete(id);
       return c.json({ success: true, id });
-    } catch (err: any) {
-      return c.json({ error: '教員の削除に失敗しました', message: err.message }, 500);
+    } catch (err) {
+      return internalError(c, 'Failed to delete room', err);
+    }
+  })
+
+  .post('/api/auth/teacher/login', zValidator('json', TeacherLoginInputSchema), async (c) => {
+    const { username, password } = c.req.valid('json');
+    const key = loginKey(c, username);
+    if (isLoginBlocked(key)) return c.json({ error: 'Too Many Requests', retryAfter: 60 }, 429);
+    try {
+      const jwtSecret = getSecret(c.env, 'JWT_SECRET');
+      const supabaseJwtSecret = getSecret(c.env, 'SUPABASE_JWT_SECRET');
+      const teacher = await c.get('teacherRepo').findByUsername(username);
+      if (!teacher || !(await bcrypt.compare(password, teacher.passwordHash))) {
+        recordLoginFailure(key);
+        return c.json({ error: 'ユーザー名またはパスワードが正しくありません' }, 401);
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const token = await sign({ sub: teacher.id, username: teacher.username, role: 'teacher', iat: now, exp: now + 86_400 }, jwtSecret);
+      const supabaseToken = await sign({
+        sub: teacher.id, role: 'authenticated', aud: 'authenticated', iss: 'supabase', iat: now, exp: now + 43_200,
+        user_role: 'teacher', teacherId: teacher.id, userId: teacher.id,
+      }, supabaseJwtSecret);
+      failedLogins.delete(key);
+      await c.get('teacherRepo').updateLastLogin(teacher.id, new Date().toISOString());
+      return c.json({ token, supabaseToken, teacher: { id: teacher.id, username: teacher.username } });
+    } catch (err) {
+      return internalError(c, 'Teacher login is unavailable', err);
+    }
+  })
+
+  .get('/api/teachers', requireTeacher, async (c) => {
+    try {
+      return c.json({ teachers: await c.get('teacherRepo').listAll() });
+    } catch (err) {
+      return internalError(c, '教員一覧の取得に失敗しました', err);
+    }
+  })
+
+  .post('/api/teachers', requireTeacher, zValidator('json', TeacherLoginInputSchema), async (c) => {
+    const { username, password } = c.req.valid('json');
+    try {
+      if (await c.get('teacherRepo').findByUsername(username)) return c.json({ error: 'このユーザー名はすでに登録されています' }, 400);
+      const id = crypto.randomUUID();
+      await c.get('teacherRepo').create({ id, username, passwordHash: await bcrypt.hash(password, 10) });
+      return c.json({ success: true, teacher: { id, username } }, 201);
+    } catch (err) {
+      return internalError(c, '教員の登録に失敗しました', err);
+    }
+  })
+
+  .delete('/api/teachers/:id', requireTeacher, async (c) => {
+    const id = c.req.param('id')!;
+    try {
+      if (c.get('teacherAuthUser')?.sub === id) return c.json({ error: '現在ログイン中の自分自身のアカウントを削除することはできません' }, 400);
+      await c.get('teacherRepo').delete(id);
+      return c.json({ success: true, id });
+    } catch (err) {
+      return internalError(c, '教員の削除に失敗しました', err);
     }
   });
 
-type DecoupledEnv = {
-  Bindings: Omit<Bindings, 'DB'> & { DB: any };
-  Variables: Variables;
-};
-
-export type AppType = typeof routes extends Hono<any, infer S, infer O>
-  ? Hono<DecoupledEnv, S, O>
-  : never;
-
+type DecoupledEnv = { Bindings: Omit<Bindings, 'DB'> & { DB: any }; Variables: Variables };
+export type AppType = typeof routes extends Hono<any, infer S, infer O> ? Hono<DecoupledEnv, S, O> : never;
 export default app;

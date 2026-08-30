@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import client from '../lib/hc';
 import { GridItem } from '@my-app/shared';
 import { createClient } from '@supabase/supabase-js';
-import { activeRoom, supabaseConfig } from '../lib/storage';
+import { activeRoom, supabaseConfig, teacherAuth } from '../lib/storage';
 import { readResponseBody, extractErrorMessage } from '../lib/apiResponse';
+import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
 
 const cleanSupabaseUrl = (url: string): string => {
   return url
@@ -116,9 +117,21 @@ export function useRoomLayout({
       return;
     }
 
-    const rawUrl = supabaseUrl.trim() || supabaseConfig.getUrl() || 'https://temp-placeholder.supabase.co';
+    const rawUrl = supabaseUrl.trim() || supabaseConfig.getUrl();
     const finalSupabaseUrl = cleanSupabaseUrl(rawUrl);
-    const finalSupabaseAnonKey = supabaseAnonKey.trim() || supabaseConfig.getKey() || 'temp-placeholder-key';
+    const finalSupabaseAnonKey = supabaseAnonKey.trim() || supabaseConfig.getKey();
+
+    if (!finalSupabaseUrl || !finalSupabaseAnonKey) {
+      addToast('error', 'Supabase URL と Anon Key を設定してから保存してください');
+      return;
+    }
+    try {
+      const parsedUrl = new URL(finalSupabaseUrl);
+      if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) throw new Error();
+    } catch {
+      addToast('error', 'Supabase URL には有効な HTTPS URL を指定してください');
+      return;
+    }
 
     setIsSaving(true);
     
@@ -267,7 +280,7 @@ export function useRoomLayout({
     if (finalSbUrl && finalSbKey) {
       try {
         const sb = createClient(finalSbUrl, finalSbKey);
-        const channel = sb.channel(id);
+        const channel = await createAuthorizedPrivateChannel(sb, teacherAuth.getSupabaseToken(), `room:${id}`);
         channel.subscribe(async (status) => {
           if (status === 'SUBSCRIBED') {
             await channel.send({

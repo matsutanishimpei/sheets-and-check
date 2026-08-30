@@ -28,7 +28,7 @@ interface StudentViewProps {
   onStudentLogin: () => void;
   onLockSeat: () => void;
   onChangeSeat: () => void;
-  onSendBroadcast: (status: 'ok' | 'ng', responseTime: number, overrideComment?: string) => void;
+  onSendBroadcast: (status: 'ok' | 'ng', overrideComment?: string) => Promise<boolean>;
 }
 
 export const StudentView: React.FC<StudentViewProps> = React.memo(({

@@ -15,9 +15,9 @@
   "main": "./src/index.ts",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "dev": "wrangler dev src/index.ts",
+    "dev": "wrangler dev src/index.ts --var ENVIRONMENT:development",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
     "deploy": "wrangler deploy --minify src/index.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
@@ -27,12 +27,11 @@
     "@my-app/shared": "*",
     "bcryptjs": "3.0.3",
     "drizzle-orm": "^0.45.2",
-    "hono": "4.12.18",
-    "hono-rate-limiter": "0.5.3"
+    "hono": "4.13.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20240529.0",
     "@types/bcryptjs": "2.4.6",
-    "wrangler": "3.57.2"
+    "wrangler": "3.114.17"
   }
 }

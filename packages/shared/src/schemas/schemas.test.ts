@@ -54,11 +54,10 @@ describe('Shared Package Schemas Validation', () => {
   describe('StudentToTeacherEventSchema (Student ID and details)', () => {
     it('should validate valid student to teacher events', () => {
       const validData = {
-        seatId: 'A1',
+        seatId: '1,1',
         status: 'ok',
         studentName: '山田 太郎',
         studentId: 'B2026X45', // 8 characters (within [5, 15] limit)
-        responseTime: 120,
         comment: '分かりました！',
       };
 
@@ -68,7 +67,7 @@ describe('Shared Package Schemas Validation', () => {
 
     it('should reject studentId less than 5 characters', () => {
       const invalidData = {
-        seatId: 'A1',
+        seatId: '1,1',
         status: 'ok',
         studentName: '山田 太郎',
         studentId: '1234', // 4 characters
@@ -77,13 +76,13 @@ describe('Shared Package Schemas Validation', () => {
       const result = StudentToTeacherEventSchema.safeParse(invalidData);
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error.errors[0].message).toContain('at least 5 characters');
+        expect(result.error.errors[0].message).toContain('5-15');
       }
     });
 
     it('should reject studentId more than 15 characters', () => {
       const invalidData = {
-        seatId: 'A1',
+        seatId: '1,1',
         status: 'ok',
         studentName: '山田 太郎',
         studentId: '1234567890123456', // 16 characters
@@ -92,7 +91,7 @@ describe('Shared Package Schemas Validation', () => {
       const result = StudentToTeacherEventSchema.safeParse(invalidData);
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error.errors[0].message).toContain('at most 15 characters');
+        expect(result.error.errors[0].message).toContain('5-15');
       }
     });
   });
@@ -102,7 +101,7 @@ describe('Shared Package Schemas Validation', () => {
       const event = {
         type: 'student_to_teacher',
         payload: {
-          seatId: 'B3',
+          seatId: '2,3',
           status: 'ng',
           studentName: '鈴木 花子',
           studentId: 'A2026Z09',
@@ -140,6 +139,21 @@ describe('Shared Package Schemas Validation', () => {
 
       const result = BroadcastEventSchema.safeParse(event);
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('Room layout security bounds', () => {
+    const base = { name: 'Room', grid: [], supabaseUrl: 'https://example.supabase.co', supabaseAnonKey: 'key' };
+
+    it('rejects duplicate and out-of-range coordinates', () => {
+      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: [{ x: 1, y: 1, type: 'student' }, { x: 1, y: 1, type: 'teacher' }] }).success).toBe(false);
+      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: [{ x: 12, y: 0, type: 'student' }] }).success).toBe(false);
+    });
+
+    it('rejects excessive room names, grids, and non-HTTPS URLs', () => {
+      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, name: 'x'.repeat(101) }).success).toBe(false);
+      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: Array.from({ length: 145 }, (_, i) => ({ x: i % 12, y: Math.floor(i / 12), type: 'student' })) }).success).toBe(false);
+      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, supabaseUrl: 'http://example.supabase.co' }).success).toBe(false);
     });
   });
 });

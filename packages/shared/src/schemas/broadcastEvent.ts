@@ -6,13 +6,18 @@ import { SeatStatusTypeSchema } from './seatStatus';
  * Format for data sent from a student to the teacher.
  */
 export const StudentToTeacherEventSchema = z.object({
-  seatId: z.string().min(1, 'Seat ID is required'),
+  seatId: z.string().regex(/^(?:[0-9]|1[01]),(?:[0-9]|1[01])$/, 'Seat ID must be an in-range grid coordinate'),
   status: SeatStatusTypeSchema,
-  studentName: z.string().min(1, 'Student name is required'),
-  studentId: z.string().min(5, 'Student ID must be at least 5 characters').max(15, 'Student ID must be at most 15 characters'),
-  responseTime: z.number().nonnegative().optional(),
-  comment: z.string().nullable().optional(),
-});
+  studentName: z.string().trim().min(1).max(100),
+  studentId: z.string().trim().regex(/^[A-Z0-9]{5,15}$/i, 'Student ID must be 5-15 alphanumeric characters'),
+  comment: z.string().max(1000).nullable().optional(),
+}).strict();
+
+/** Student input accepted by the authenticated HTTP relay. Identity comes from JWT claims. */
+export const StudentEventInputSchema = StudentToTeacherEventSchema.omit({
+  studentName: true,
+  studentId: true,
+}).strict();
 
 /**
  * 2. 教員から全学生へのリセット信号フォーマット

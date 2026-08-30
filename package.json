@@ -29,8 +29,9 @@
     "@emnapi/runtime": "1.10.0",
     "@vitest/coverage-v8": "4.1.6",
     "drizzle-orm": "^0.45.2",
+    "typescript": "5.4.5",
     "vitest": "4.1.6",
-    "wrangler": "3.57.2"
+    "wrangler": "3.114.17"
   },
   "optionalDependencies": {
     "@esbuild/linux-x64": "0.21.5"

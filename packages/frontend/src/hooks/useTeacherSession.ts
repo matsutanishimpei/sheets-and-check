@@ -26,7 +26,8 @@ export function useTeacherSession() {
 
   const supabaseClient = useSupabaseClient(
     initialUrl,
-    initialKey
+    initialKey,
+    teacherToken
   );
   
   const { supabaseUrl, setSupabaseUrl, supabaseAnonKey, setSupabaseAnonKey, supabase, saveSupabaseConfig } = supabaseClient;
@@ -50,6 +51,7 @@ export function useTeacherSession() {
   // ── Realtime session (Supabase channels) ──
   const realtimeSession = useTeacherRealtime({
     supabase,
+    realtimeToken: teacherToken,
     roomId: roomLayout.roomId,
     isSeatLocked: seatManager.isSeatLocked,
     setLiveStatuses: seatManager.setLiveStatuses,

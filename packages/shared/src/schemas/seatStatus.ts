@@ -16,7 +16,7 @@ export const LiveSeatStatusSchema = z.object({
   status: SeatStatusTypeSchema,
   name: z.string(),
   studentId: z.string().optional(),
-  responseTime: z.number().optional(),
+  answeredAt: z.string().optional(),
   comment: z.string().nullable().optional(),
 });
 
@@ -24,7 +24,6 @@ export const RealtimeLogSchema = z.object({
   id: z.string(),
   studentName: z.string(),
   studentId: z.string().optional(),
-  responseTime: z.number().optional(),
   seatId: z.string(),
   status: SeatStatusTypeSchema,
   comment: z.string().nullable().optional(),

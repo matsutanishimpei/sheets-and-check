@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useSeatManager } from './useSeatManager';
-import { seatStatuses as seatStorage } from '../lib/storage';
+import { clearLegacyResponseData } from '../lib/storage';
 
 describe('useSeatManager Custom Hook', () => {
   const addToastMock = vi.fn();
@@ -22,18 +22,20 @@ describe('useSeatManager Custom Hook', () => {
     expect(result.current.isSeatLocked).toBe(false);
   });
 
-  it('should load initial statuses from localStorage on load', () => {
-    const mockStatuses = {
-      'seat-A1': { name: '学生A', status: 'ok' as const },
-      'seat-B2': { name: '学生B', status: 'ng' as const },
-    };
-    seatStorage.save('test-room-1', mockStatuses);
-
+  it('does not restore or persist response data in localStorage', () => {
+    localStorage.setItem('seat_statuses_room_test-room-1', JSON.stringify({
+      'seat-A1': { name: '過去の学生', status: 'ok' },
+    }));
+    clearLegacyResponseData();
     const { result } = renderHook(() =>
       useSeatManager({ roomId: 'test-room-1', addToast: addToastMock })
     );
 
-    expect(result.current.liveStatuses).toEqual(mockStatuses);
+    expect(result.current.liveStatuses).toEqual({});
+    act(() => result.current.setLiveStatuses({
+      'seat-A1': { name: '現在の学生', status: 'ng', comment: '質問' },
+    }));
+    expect(localStorage.getItem('seat_statuses_room_test-room-1')).toBeNull();
   });
 
   it('should toggle seat lock status and emit correct toasts', () => {
@@ -63,12 +65,11 @@ describe('useSeatManager Custom Hook', () => {
       'seat-A1': { name: '学生A', status: 'ok' as const },
       'seat-B2': { name: '学生B', status: 'ng' as const },
     };
-    seatStorage.save('test-room-1', mockStatuses);
-
     const { result } = renderHook(() =>
       useSeatManager({ roomId: 'test-room-1', addToast: addToastMock })
     );
 
+    act(() => result.current.setLiveStatuses(mockStatuses));
     act(() => {
       result.current.removeLiveStatus('seat-A1');
     });
@@ -80,23 +81,23 @@ describe('useSeatManager Custom Hook', () => {
 
   it('should reset statuses without removing students on bulkResetLiveStatuses', () => {
     const mockStatuses = {
-      'seat-A1': { name: '学生A', status: 'ok' as const, comment: 'わかった', responseTime: 5000 },
-      'seat-B2': { name: '学生B', status: 'ng' as const, comment: 'わからない', responseTime: 8000 },
+      'seat-A1': { name: '学生A', status: 'ok' as const, comment: 'わかった', answeredAt: '10:00:00' },
+      'seat-B2': { name: '学生B', status: 'ng' as const, comment: 'わからない', answeredAt: '10:00:01' },
     };
-    seatStorage.save('test-room-1', mockStatuses);
 
     const { result } = renderHook(() =>
       useSeatManager({ roomId: 'test-room-1', addToast: addToastMock })
     );
 
+    act(() => result.current.setLiveStatuses(mockStatuses));
     act(() => {
       const success = result.current.bulkResetLiveStatuses();
       expect(success).toBe(true);
     });
 
     expect(result.current.liveStatuses).toEqual({
-      'seat-A1': { name: '学生A', status: 'none', comment: '', responseTime: undefined },
-      'seat-B2': { name: '学生B', status: 'none', comment: '', responseTime: undefined },
+      'seat-A1': { name: '学生A', status: 'none', comment: '', answeredAt: undefined },
+      'seat-B2': { name: '学生B', status: 'none', comment: '', answeredAt: undefined },
     });
     expect(addToastMock).toHaveBeenCalledWith('success', expect.any(String));
   });

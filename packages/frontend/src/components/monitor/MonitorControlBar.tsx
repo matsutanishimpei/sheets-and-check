@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderOpen, RotateCcw, Download, Trash2 } from 'lucide-react';
+import { FolderOpen, RotateCcw } from 'lucide-react';
 
 interface MonitorControlBarProps {
   savedRooms: { id: string; name: string }[];
@@ -7,8 +7,6 @@ interface MonitorControlBarProps {
   isActive: boolean;
   onLoadClassroom: (id: string) => void;
   onBulkReset: () => void;
-  onExportCSV: () => void;
-  onClearSavedResponses: () => void;
   onToggleActive: () => void;
 }
 
@@ -18,8 +16,6 @@ export const MonitorControlBar: React.FC<MonitorControlBarProps> = ({
   isActive,
   onLoadClassroom,
   onBulkReset,
-  onExportCSV,
-  onClearSavedResponses,
   onToggleActive
 }) => {
   return (
@@ -43,31 +39,8 @@ export const MonitorControlBar: React.FC<MonitorControlBarProps> = ({
         {/* Monitor Controls (Lock/Reset) */}
         {roomId && (
           <div className="card" style={{ padding: '0.75rem 1rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={onBulkReset} title="現在の学生の回答状態を履歴に保存し、全員の回答状況をクリアして新しい質問を開始します。">
+            <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={onBulkReset} title="全員の回答状況をクリアして新しい質問を開始します。">
                <RotateCcw size={16}/> みんなの回答をクリア
-            </button>
-            <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={onExportCSV}>
-               <Download size={16}/> 回答ログ (CSV)
-            </button>
-            <button 
-              className="btn" 
-              style={{ 
-                padding: '0.5rem 0.75rem', 
-                background: 'rgba(255, 255, 255, 0.02)', 
-                border: '1px solid var(--border-color)', 
-                color: 'var(--text-muted)', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '0.25rem',
-                fontSize: '0.8rem',
-                transition: 'all var(--transition-fast)'
-              }} 
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#ef4444'; e.currentTarget.style.color = '#ef4444'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-              onClick={onClearSavedResponses}
-              title="これまでに保存された本日の質問履歴をクリアします（次の講義を始める際などに手動でクリアしたい場合に使用します）"
-            >
-               <Trash2 size={14}/> 履歴クリア
             </button>
           </div>
         )}

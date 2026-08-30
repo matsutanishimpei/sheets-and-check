@@ -11,7 +11,7 @@
 ## Phase 2: ページ肥大化の解消
 
 - [x] 2.1 `useTeacherSession.ts` ファサードフック作成（3フック統合）
-- [x] 2.2 `useResponseArchive.ts` 作成（CSV/アーカイブロジック抽出）
+- [x] 2.2 回答状態管理を専用フックへ分離（後に長期履歴機能は廃止）
 - [x] 2.3 TeacherLayoutPage をスリム化 (227行 → 90行)
 - [x] 2.4 TeacherMonitorPage をスリム化 (630行 → 305行)
 - [x] 2.5 ビルド確認 (tsc + vite build) ✅

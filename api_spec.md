@@ -24,19 +24,20 @@ Authorization: Bearer <TEACHER_JWT_TOKEN>
 | メソッド | パス | 保護 | 説明 |
 | :--- | :--- | :---: | :--- |
 | **GET** | `/api/hello` | 🟢 | API ヘルスチェック |
-| **GET** | `/api/rooms` | 🟢 | 登録されている全教室の一覧を取得 |
+| **GET** | `/api/rooms` | 🔴 | 登録されている全教室の一覧を取得 |
 | **GET** | `/api/rooms/:id` | 🟢 | 指定された教室のグリッド・レイアウト設定を取得 |
-| **POST** | `/api/rooms` | 🟢 | 新しい教室レイアウトを新規登録 (UUIDを自動生成) |
-| **PUT** | `/api/rooms/:id` | 🟢 | 既存の教室レイアウト・接続設定を上書き更新 |
-| **PATCH** | `/api/rooms/:id/status` | 🟢 | 教室のチェックイン受付状態 (Open/Closed) のトグル |
-| **DELETE** | `/api/rooms/:id` | 🟢 | 教室情報をデータベースから物理削除 |
+| **POST** | `/api/rooms` | 🔴 | 新しい教室レイアウトを新規登録 (UUIDを自動生成) |
+| **PUT** | `/api/rooms/:id` | 🔴 | 既存の教室レイアウト・接続設定を上書き更新 |
+| **PATCH** | `/api/rooms/:id/status` | 🔴 | 教室のチェックイン受付状態 (Open/Closed) のトグル |
+| **DELETE** | `/api/rooms/:id` | 🔴 | 教室情報をデータベースから物理削除 |
 | **POST** | `/api/auth/teacher/login` | 🟢 | 教員アカウントの認証 (ログイン) および JWT の発行 |
 | **POST** | `/api/rooms/:id/student-token` | 🟢 | 学生用のリアルタイム接続検証 JWT トークンの発行 |
+| **POST** | `/api/rooms/:id/student-event` | 🟡 | 学生JWTを検証して回答をTeacher専用Topicへ中継 |
 | **GET** | `/api/teachers` | 🔴 | 登録されている教員アカウントの一覧を取得 |
 | **POST** | `/api/teachers` | 🔴 | 新規教員アカウントを登録 (パスワード自動ハッシュ化) |
 | **DELETE** | `/api/teachers/:id` | 🔴 | 指定された教員アカウントの削除 (自分自身は削除不可) |
 
-> 🔴 = 要 Bearer トークン認証 / 🟢 = パブリックアクセス
+> 🔴 = Teacher JWT必須 / 🟡 = Student Supabase JWT必須 / 🟢 = パブリックアクセス
 
 ---
 
@@ -61,6 +62,7 @@ API サーバーが正常に稼働しているかを確認します。
 
 * **メソッド**: `GET`
 * **パス**: `/api/rooms`
+* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
 * **レスポンス**: `200 OK`
   ```json
   {
@@ -104,6 +106,7 @@ API サーバーが正常に稼働しているかを確認します。
 
 * **メソッド**: `POST`
 * **パス**: `/api/rooms`
+* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
 * **バリデーションスキーマ**: `SaveRoomLayoutInputSchema` (Zod)
 * **リクエストボディ**:
   ```json
@@ -134,6 +137,7 @@ API サーバーが正常に稼働しているかを確認します。
 
 * **メソッド**: `PUT`
 * **パス**: `/api/rooms/:id`
+* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
 * **バリデーションスキーマ**: `SaveRoomLayoutInputSchema` (Zod)
 * **リクエストボディ**: (POST 形式と同様)
 * **レスポンス**: `200 OK` (更新されたデータモデル)
@@ -146,6 +150,7 @@ API サーバーが正常に稼働しているかを確認します。
 
 * **メソッド**: `PATCH`
 * **パス**: `/api/rooms/:id/status`
+* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
 * **リクエストボディ**:
   ```json
   {
@@ -167,6 +172,7 @@ API サーバーが正常に稼働しているかを確認します。
 
 * **メソッド**: `DELETE`
 * **パス**: `/api/rooms/:id`
+* **ヘッダー**: `Authorization: Bearer <TEACHER_JWT_TOKEN>`
 * **レスポンス**: `200 OK`
   ```json
   {
@@ -174,7 +180,6 @@ API サーバーが正常に稼働しているかを確認します。
     "id": "bc86298a-8a8b-4b13-8eb0-f925c48b262a"
   }
   ```
-
 ---
 
 ### 8. 教員ログイン
@@ -226,6 +231,18 @@ API サーバーが正常に稼働しているかを確認します。
     "roomId": "bc86298a-8a8b-4b13-8eb0-f925c48b262a"
   }
   ```
+* **エラー**: `403 Forbidden` (`isActive === false` のRoom)
+
+---
+
+### 9.5 学生回答中継
+学生用JWTを検証し、本文の本人情報を信用せずJWT claimの `studentId` / `name` を付与して `student_to_teacher` を中継します。
+
+* **メソッド**: `POST`
+* **パス**: `/api/rooms/:id/student-event`
+* **ヘッダー**: `Authorization: Bearer <STUDENT_SUPABASE_JWT>`
+* **本文**: `seatId`, `status`, 任意の `comment` のみ。`studentId` と氏名はJWT claimから決定され、本文へ含めると拒否されます。
+* **エラー**: `401` (無効JWT・別Room), `403` (Room closed), `400` (余分な本人情報やTeacherイベント)
 
 ---
 

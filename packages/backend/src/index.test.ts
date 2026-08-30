@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sign } from 'hono/jwt';
 import app from './index';
 import { InMemoryRoomRepository } from './repositories/InMemoryRoomRepository';
 import { InMemoryTeacherRepository } from './repositories/InMemoryTeacherRepository';
@@ -8,6 +9,15 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
   let mockRepo: InMemoryRoomRepository;
   let mockTeacherRepo: InMemoryTeacherRepository;
   let testApp: Hono<any, any, any>;
+  const teacherAuthorization = async (overrides: Record<string, unknown> = {}) => {
+    const token = await sign({
+      sub: 'teacher-default-uuid',
+      role: 'teacher',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      ...overrides,
+    }, 'dev-app-jwt-secret-key-123');
+    return { Authorization: `Bearer ${token}` };
+  };
 
   beforeEach(() => {
     // 1. Setup in-memory repositories with default seed data
@@ -36,6 +46,8 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     testApp.route('/', app);
   });
 
+  afterEach(() => vi.restoreAllMocks());
+
   it('GET /api/hello - should return greeting message', async () => {
     const res = await testApp.request('/api/hello');
     expect(res.status).toBe(200);
@@ -43,8 +55,41 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     expect(body).toEqual({ message: 'Hello Hono!' });
   });
 
-  it('GET /api/rooms - should list all registered classrooms', async () => {
-    const res = await testApp.request('/api/rooms');
+  describe('Room administration authentication boundary', () => {
+    it('returns 401 for every unauthenticated management operation', async () => {
+      const payload = JSON.stringify({
+        name: 'Unauthorized room',
+        grid: [],
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon-key',
+      });
+      const requests = [
+        testApp.request('/api/rooms'),
+        testApp.request('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }),
+        testApp.request('/api/rooms/test-room-uuid-1', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: payload }),
+        testApp.request('/api/rooms/test-room-uuid-1/status', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isActive: false }) }),
+        testApp.request('/api/rooms/test-room-uuid-1', { method: 'DELETE' }),
+      ];
+      const responses = await Promise.all(requests);
+      expect(responses.map((response) => response.status)).toEqual([401, 401, 401, 401, 401]);
+      expect(mockRepo.roomsTable).toHaveLength(1);
+    });
+
+    it('returns 401 for an invalid and an expired Teacher JWT', async () => {
+      const invalid = await testApp.request('/api/rooms', { headers: { Authorization: 'Bearer invalid.jwt.value' } });
+      const expired = await testApp.request('/api/rooms', { headers: await teacherAuthorization({ exp: Math.floor(Date.now() / 1000) - 10 }) });
+      expect(invalid.status).toBe(401);
+      expect(expired.status).toBe(401);
+    });
+
+    it('keeps a single-room GET public', async () => {
+      const response = await testApp.request('/api/rooms/test-room-uuid-1');
+      expect(response.status).toBe(200);
+    });
+  });
+
+  it('GET /api/rooms - should list all registered classrooms for a teacher', async () => {
+    const res = await testApp.request('/api/rooms', { headers: await teacherAuthorization() });
     expect(res.status).toBe(200);
     const body: any = await res.json();
     expect(body.rooms).toHaveLength(1);
@@ -81,7 +126,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       '/api/rooms',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...await teacherAuthorization() },
         body: JSON.stringify(newRoomPayload),
       }
     );
@@ -111,7 +156,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       '/api/rooms/test-room-uuid-1',
       {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...await teacherAuthorization() },
         body: JSON.stringify(updatedPayload),
       }
     );
@@ -132,7 +177,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       '/api/rooms/test-room-uuid-1/status',
       {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...await teacherAuthorization() },
         body: JSON.stringify({ isActive: false }),
       }
     );
@@ -151,6 +196,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       '/api/rooms/test-room-uuid-1',
       {
         method: 'DELETE',
+        headers: await teacherAuthorization(),
       }
     );
 
@@ -216,6 +262,16 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       const body: any = await res.json();
       expect(body.error).toContain('ユーザー名またはパスワードが正しくありません');
     });
+
+    it('rate limits repeated Teacher login failures without affecting Student check-in', async () => {
+      const request = () => testApp.request('/api/auth/teacher/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '192.0.2.55' },
+        body: JSON.stringify({ username: 'brute_force_target', password: 'wrong_password' }),
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) expect((await request()).status).toBe(401);
+      expect((await request()).status).toBe(429);
+    });
   });
 
   describe('Student Token Issuance Endpoints (Approach B)', () => {
@@ -255,6 +311,152 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       const body: any = await res.json();
       expect(body.error).toContain('指定された教室が見つかりません');
     });
+
+    it('POST /api/rooms/:id/student-token - returns 403 for a closed room', async () => {
+      await mockRepo.updateStatus('test-room-uuid-1', false);
+      const res = await testApp.request('/api/rooms/test-room-uuid-1/student-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: 'STU001', name: '田中太郎' }),
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('allows 50 simultaneous check-ins from the same school NAT address', async () => {
+      const responses = await Promise.all(Array.from({ length: 50 }, (_, index) => testApp.request('/api/rooms/test-room-uuid-1/student-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.10' },
+        body: JSON.stringify({ studentId: `STU${String(index).padStart(3, '0')}`, name: `Student ${index}` }),
+      })));
+      expect(responses.every((response) => response.status === 200)).toBe(true);
+    });
+  });
+
+  describe('Realtime trust boundary', () => {
+    const relayEnv = {
+      SUPABASE_JWT_SECRET: 'relay-test-secret-that-is-not-a-production-value',
+      SUPABASE_URL: 'https://test-sb-1.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-only-service-key',
+    };
+
+    const studentToken = (roomId = 'test-room-uuid-1', studentId = 'STU001', name = 'Claim Name') => sign({
+      sub: `student:${roomId}:${studentId}`, role: 'authenticated', user_role: 'student',
+      roomId, studentId, name, exp: Math.floor(Date.now() / 1000) + 3600,
+    }, relayEnv.SUPABASE_JWT_SECRET);
+
+    it('relays only student_to_teacher and derives identity from JWT claims', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 202 }));
+      const token = await studentToken();
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatId: '1,1', status: 'ok', comment: 'understood' }),
+      }, relayEnv);
+      expect(response.status).toBe(200);
+      const [requestUrl, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const relayBody = JSON.parse(request.body as string);
+      expect(requestUrl).toContain('/broadcast/room%3Atest-room-uuid-1%3Ateacher/events/student_to_teacher?private=true');
+      expect(relayBody).toMatchObject({ studentId: 'STU001', studentName: 'Claim Name' });
+    });
+
+    it('rejects a Student token from another room', async () => {
+      const token = await studentToken('another-room');
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatId: '1,1', status: 'ok' }),
+      }, relayEnv);
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects identity fields and teacher-only event injection in Student input', async () => {
+      const token = await studentToken();
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: 'teacher_reset', seatId: '1,1', status: 'ok', studentId: 'FORGED', studentName: 'Forged' }),
+      }, relayEnv);
+      expect(response.status).toBe(400);
+    });
+
+    it('accepts 50 simultaneous same-NAT answers and relays JWT identities only to the claimed room', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}', { status: 202 }));
+      const students = Array.from({ length: 50 }, (_, index) => ({
+        studentId: `STU${String(index).padStart(3, '0')}`,
+        name: `Claim Student ${index}`,
+        seatId: `${index % 12},${Math.floor(index / 12)}`,
+      }));
+      const tokens = await Promise.all(students.map((student) => studentToken(
+        'test-room-uuid-1',
+        student.studentId,
+        student.name,
+      )));
+
+      const responses = await Promise.all(students.map((student, index) => testApp.request(
+        '/api/rooms/test-room-uuid-1/student-event',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokens[index]}`,
+            'CF-Connecting-IP': '203.0.113.10',
+          },
+          body: JSON.stringify({ seatId: student.seatId, status: index % 2 === 0 ? 'ok' : 'ng', comment: `answer-${index}` }),
+        },
+        relayEnv,
+      )));
+
+      expect(responses).toHaveLength(50);
+      expect(responses.every((response) => response.status === 200)).toBe(true);
+      expect(responses.every((response) => response.status !== 429)).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(50);
+
+      const relayed = fetchMock.mock.calls.map(([requestUrl, request]) => ({
+        requestUrl: String(requestUrl),
+        body: JSON.parse((request as RequestInit).body as string),
+      }));
+      expect(relayed.every(({ requestUrl }) => requestUrl.includes('/broadcast/room%3Atest-room-uuid-1%3Ateacher/events/student_to_teacher?private=true'))).toBe(true);
+      for (const student of students) {
+        const event = relayed.find(({ body }) => body.studentId === student.studentId);
+        expect(event?.body).toMatchObject({
+          studentId: student.studentId,
+          studentName: student.name,
+          seatId: student.seatId,
+        });
+      }
+    });
+  });
+
+  describe('Production fail-closed behavior', () => {
+    it('does not issue login tokens when production secrets are absent', async () => {
+      const response = await testApp.request('/api/auth/teacher/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.42' },
+        body: JSON.stringify({ username: 'teacher_admin', password: 'admin123' }),
+      }, { ENVIRONMENT: 'production' });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Teacher login is unavailable' });
+    });
+
+    it('uses an exact production CORS allowlist and excludes preview pages.dev origins', async () => {
+      const allowed = await testApp.request('/api/hello', { headers: { Origin: 'https://school.example' } }, {
+        ENVIRONMENT: 'production', ALLOWED_ORIGINS: 'https://school.example',
+      });
+      const rejected = await testApp.request('/api/hello', { headers: { Origin: 'https://attacker.pages.dev' } }, {
+        ENVIRONMENT: 'production', ALLOWED_ORIGINS: 'https://school.example',
+      });
+      expect(allowed.headers.get('access-control-allow-origin')).toBe('https://school.example');
+      expect(rejected.headers.get('access-control-allow-origin')).toBeNull();
+    });
+
+    it('rejects oversized Room payloads before parsing', async () => {
+      const response = await testApp.request('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...await teacherAuthorization() },
+        body: JSON.stringify({ name: 'x'.repeat(70_000), grid: [], supabaseUrl: 'https://example.supabase.co', supabaseAnonKey: 'key' }),
+      });
+      expect(response.status).toBe(413);
+    });
   });
 
   describe('Teacher Account CRUD Endpoints', () => {
@@ -280,7 +482,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       const res = await testApp.request('/api/teachers');
       expect(res.status).toBe(401);
       const body: any = await res.json();
-      expect(body.error).toContain('認証トークンが見つかりません');
+      expect(body.error).toBe('Unauthorized');
     });
 
     it('GET /api/teachers - should fetch all teachers with a valid token', async () => {

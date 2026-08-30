@@ -1,6 +1,6 @@
 # リアルタイム通信の抽象化と DI (Dependency Injection) 設計仕様書
 
-本仕様書は、リアルタイム通信エンジン（Supabase Realtime）を特定のプロバイダーから完全に疎結合化し、将来的な **Pusher**、**Soketi**、または独自の WebSocket サービスへの移行（マイグレーション）を「1行の書き換え」のみで実現するための **依存性逆転（DIP / DI）設計指針** です。
+本仕様書は、リアルタイム通信エンジンを将来疎結合化するための設計案です。現行実装そのものではありません。現行の認証・Private Channel・RLS要件は [`realtime_authorization_setup.md`](./realtime_authorization_setup.md) を優先してください。
 
 ---
 
@@ -36,7 +36,6 @@ export interface RealtimeSubscriptionCallbacks {
     studentName: string;
     studentId: string;
     comment?: string | null;
-    responseTime?: number;
   }) => void;
   onTeacherReset?: () => void;
   onStudentEvicted?: (payload: { seatId: string }) => void;
@@ -45,8 +44,8 @@ export interface RealtimeSubscriptionCallbacks {
 }
 
 export interface IRealtimeService {
-  /** サーバーへの接続を確立する (AnonKey と Url を受領) */
-  connect(url: string, key: string): void;
+  /** サーバーへの接続を確立する。Private Channel用JWTも必須。 */
+  connect(url: string, key: string, accessToken: string): Promise<void>;
   /** 接続を安全に切断する */
   disconnect(): void;
   /** 特定の教室（部屋）のチャンネルを購読する */
@@ -64,7 +63,7 @@ export interface IRealtimeService {
 
 ## 🛠️ 2. プロバイダーの具現化クラスの実装
 
-### A. 現行の Supabase 実装 (`SupabaseRealtimeService.ts`)
+### A. Supabase用の将来実装例 (`SupabaseRealtimeService.ts`)
 ```typescript
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
 import { IRealtimeService, RealtimeSubscriptionCallbacks } from './IRealtimeService';
@@ -74,9 +73,10 @@ export class SupabaseRealtimeService implements IRealtimeService {
   private activeChannels: Map<string, RealtimeChannel> = new Map();
   private onlineStatus: boolean = true;
 
-  connect(url: string, key: string): void {
+  async connect(url: string, key: string, accessToken: string): Promise<void> {
     if (this.client) this.disconnect();
     this.client = createClient(url.trim(), key.trim());
+    await this.client.realtime.setAuth(accessToken);
   }
 
   disconnect(): void {
@@ -90,7 +90,7 @@ export class SupabaseRealtimeService implements IRealtimeService {
 
     // トピックコロン形式プレフィックス付きのチャンネル作成
     const channel = this.client.channel(`room:${roomId}`, {
-      config: { broadcast: { self: true } },
+      config: { private: true, broadcast: { self: true } },
     });
 
     if (callbacks.onStudentToTeacher) {

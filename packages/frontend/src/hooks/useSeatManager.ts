@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { LiveSeatStatus } from '@my-app/shared';
-import { seatStatuses as seatStorage } from '../lib/storage';
 
 interface UseSeatManagerProps {
   roomId: string | null;
@@ -11,28 +10,10 @@ export function useSeatManager({ roomId, addToast }: UseSeatManagerProps) {
   const [liveStatuses, setLiveStatuses] = useState<Record<string, LiveSeatStatus>>({});
   const [isSeatLocked, setIsSeatLocked] = useState(false);
 
-  // Load live statuses from Local Storage on roomId changes
+  // Response data is intentionally kept only in memory for the active class.
   useEffect(() => {
-    if (roomId) {
-      const stored = seatStorage.get<Record<string, LiveSeatStatus>>(roomId);
-      if (stored) {
-        setLiveStatuses(stored);
-      } else {
-        setLiveStatuses({});
-      }
-    } else {
-      setLiveStatuses({});
-    }
+    setLiveStatuses({});
   }, [roomId]);
-
-  // Persist live statuses to Local Storage when updated (Debounced to prevent performance drops under high traffic)
-  useEffect(() => {
-    if (!roomId) return;
-    const timer = setTimeout(() => {
-      seatStorage.save(roomId, liveStatuses);
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [liveStatuses, roomId]);
 
   const removeLiveStatus = useCallback((key: string) => {
     setLiveStatuses((prev) => {
@@ -58,7 +39,7 @@ export function useSeatManager({ roomId, addToast }: UseSeatManagerProps) {
             ...current,
             status: 'none',          // Reset to neutral state (gray/blue)
             comment: '',             // Clear comments
-            responseTime: undefined, // Wipe response times
+            answeredAt: undefined,   // Clear the latest answer timestamp
           };
         }
       });

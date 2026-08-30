@@ -10,7 +10,7 @@ const cleanSupabaseUrl = (url: string): string => {
     .trim();
 };
 
-export function useSupabaseClient(initialUrl: string, initialKey: string) {
+export function useSupabaseClient(initialUrl: string, initialKey: string, realtimeToken = '') {
   const [supabaseUrl, setSupabaseUrl] = useState(initialUrl);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialKey);
   
@@ -19,7 +19,9 @@ export function useSupabaseClient(initialUrl: string, initialKey: string) {
     const key = supabaseConfig.getKey() || initialKey;
     if (url && key) {
       try {
-        return createClient(url, key.trim());
+        const client = createClient(url, key.trim());
+        if (realtimeToken) void client.realtime.setAuth(realtimeToken);
+        return client;
       } catch (err) {
         console.error('Supabase initialization failed:', err);
       }
@@ -45,6 +47,7 @@ export function useSupabaseClient(initialUrl: string, initialKey: string) {
     if (cleanedUrl && trimmedKey) {
       try {
         const client = createClient(cleanedUrl, trimmedKey);
+        if (realtimeToken) void client.realtime.setAuth(realtimeToken);
         setSupabase(client);
         
         try {
@@ -59,7 +62,7 @@ export function useSupabaseClient(initialUrl: string, initialKey: string) {
     } else {
       setSupabase(null);
     }
-  }, [supabaseUrl, supabaseAnonKey]);
+  }, [supabaseUrl, supabaseAnonKey, realtimeToken]);
 
   const saveSupabaseConfig = useCallback((onSuccess: (msg: string) => void, onError: (msg: string) => void) => {
     const cleanedUrl = cleanSupabaseUrl(supabaseUrl);
@@ -70,7 +73,12 @@ export function useSupabaseClient(initialUrl: string, initialKey: string) {
       return;
     }
     try {
+      const parsedUrl = new URL(cleanedUrl);
+      if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) {
+        throw new Error('Supabase URL は認証情報を含まない HTTPS URL を指定してください');
+      }
       const client = createClient(cleanedUrl, trimmedKey);
+      if (realtimeToken) void client.realtime.setAuth(realtimeToken);
       setSupabase(client);
       
       try {
@@ -83,7 +91,7 @@ export function useSupabaseClient(initialUrl: string, initialKey: string) {
     } catch (err: any) {
       onError(`接続設定エラー: ${err.message}`);
     }
-  }, [supabaseUrl, supabaseAnonKey]);
+  }, [supabaseUrl, supabaseAnonKey, realtimeToken]);
 
   return {
     supabase,

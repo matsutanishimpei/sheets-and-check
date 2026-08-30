@@ -18,7 +18,7 @@ export const StudentPage: React.FC = () => {
   const [supabaseUrl, setSupabaseUrl] = useState('');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
   const [isRoomActive, setIsRoomActive] = useState(true);
-  const [studentToken, setStudentToken] = useState(() => studentSession.getToken());
+  const [studentToken, setStudentToken] = useState(() => roomId ? studentSession.getToken(roomId) : '');
 
   // Student specific states
   const [studentStage, setStudentStage] = useState<'config' | 'select' | 'dashboard'>('config');
@@ -67,7 +67,7 @@ export const StudentPage: React.FC = () => {
               });
               if (tokenRes.ok) {
                 const tokenData = await tokenRes.json();
-                studentSession.saveToken(tokenData.supabaseToken);
+                studentSession.saveToken(cleanUuid, tokenData.supabaseToken);
                 setStudentToken(tokenData.supabaseToken);
               }
             } catch (jwtErr) {
@@ -109,7 +109,7 @@ export const StudentPage: React.FC = () => {
     }
   }, [addToast]);
 
-  const { supabase } = useSupabaseClient(supabaseUrl, supabaseAnonKey);
+  const { supabase } = useSupabaseClient(supabaseUrl, supabaseAnonKey, studentToken);
 
   const {
     isFallbackActive,
@@ -117,6 +117,7 @@ export const StudentPage: React.FC = () => {
   } = useStudentRealtime({
     supabase,
     studentClassroomId,
+    studentToken,
     addToast,
     onTeacherReset: () => {
       setStudentComment('');
@@ -237,7 +238,7 @@ export const StudentPage: React.FC = () => {
 
             if (tokenRes.ok) {
               const tokenData = await tokenRes.json();
-              studentSession.saveToken(tokenData.supabaseToken);
+              studentSession.saveToken(studentClassroomId.trim(), tokenData.supabaseToken);
               setStudentToken(tokenData.supabaseToken);
             } else {
               throw new Error('Supabase 認証トークンの取得に失敗しました');
@@ -395,13 +396,18 @@ export const StudentPage: React.FC = () => {
           onStudentLogin={handleStudentLogin}
           onLockSeat={handleLockSeat}
           onChangeSeat={handleChangeSeat}
-          onSendBroadcast={(status, responseTime, overrideComment) => {
+          onSendBroadcast={async (status, overrideComment) => {
             const commentToSend = overrideComment !== undefined ? overrideComment : studentComment;
-            setStudentCurrentStatus(status);
+            setStudentCurrentStatus(null);
             if (overrideComment !== undefined) {
               setStudentComment(overrideComment);
             }
-            sendStudentToTeacherBroadcast(studentSeatId, status, studentName, studentId, commentToSend, responseTime);
+            const result = await sendStudentToTeacherBroadcast(studentSeatId, status, studentName, studentId, commentToSend);
+            if (result === 'ok') {
+              setStudentCurrentStatus(status);
+              return true;
+            }
+            return false;
           }}
         />
       )}

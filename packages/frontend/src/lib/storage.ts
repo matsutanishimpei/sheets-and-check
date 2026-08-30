@@ -33,6 +33,25 @@ function safeRemoveItem(key: string): void {
   }
 }
 
+/** Remove response data written by versions that persisted classroom activity. */
+export function clearLegacyResponseData(): void {
+  const prefixes = [
+    'seat_statuses_room_',
+    'realtime_logs_room_',
+    'class_responses_room_',
+    'class_responses_date_room_',
+  ];
+  try {
+    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+      .filter((key): key is string => Boolean(key));
+    keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).forEach(safeRemoveItem);
+  } catch (e) {
+    console.warn('[storage] Failed to clear legacy response data:', e);
+  }
+}
+
+clearLegacyResponseData();
+
 // ── Teacher Auth ─────────────────────────────────────────────────────
 
 export const teacherAuth = {
@@ -84,76 +103,6 @@ export const activeRoom = {
   clear: () => safeRemoveItem('active_teacher_room_id'),
 };
 
-// ── Seat Statuses (per room) ─────────────────────────────────────────
-
-export const seatStatuses = {
-  get: <T = unknown>(roomId: string): T | null => {
-    const raw = safeGetItem(`seat_statuses_room_${roomId}`);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  },
-
-  save: (roomId: string, data: unknown) => {
-    safeSetItem(`seat_statuses_room_${roomId}`, JSON.stringify(data));
-  },
-
-  remove: (roomId: string) => {
-    safeRemoveItem(`seat_statuses_room_${roomId}`);
-  },
-};
-
-// ── Realtime Logs (per room) ─────────────────────────────────────────
-
-export const realtimeLogs = {
-  get: <T = unknown>(roomId: string): T | null => {
-    const raw = safeGetItem(`realtime_logs_room_${roomId}`);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  },
-
-  save: (roomId: string, data: unknown) => {
-    safeSetItem(`realtime_logs_room_${roomId}`, JSON.stringify(data));
-  },
-
-  remove: (roomId: string) => {
-    safeRemoveItem(`realtime_logs_room_${roomId}`);
-  },
-};
-
-// ── Response Archive (per room) ──────────────────────────────────────
-
-export const responseArchive = {
-  get: <T = unknown>(roomId: string): T | null => {
-    const raw = safeGetItem(`class_responses_room_${roomId}`);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return null;
-    }
-  },
-
-  save: (roomId: string, data: unknown) => {
-    safeSetItem(`class_responses_room_${roomId}`, JSON.stringify(data));
-  },
-
-  remove: (roomId: string) => {
-    safeRemoveItem(`class_responses_room_${roomId}`);
-  },
-
-  getDate: (roomId: string) => safeGetItem(`class_responses_date_room_${roomId}`),
-  saveDate: (roomId: string) => safeSetItem(`class_responses_date_room_${roomId}`, new Date().toDateString()),
-  removeDate: (roomId: string) => safeRemoveItem(`class_responses_date_room_${roomId}`),
-};
-
 // ── Student Session (per room) ───────────────────────────────────────
 
 export const studentSession = {
@@ -161,14 +110,14 @@ export const studentSession = {
   getName: (roomId: string) => safeGetItem(`student_name_${roomId}`),
   getSeatId: (roomId: string) => safeGetItem(`student_seat_id_${roomId}`),
   getPrevSeatId: (roomId: string) => safeGetItem(`student_prev_seat_id_${roomId}`),
-  getToken: () => safeGetItem('supabase_student_token') || '',
+  getToken: (roomId: string) => safeGetItem(`supabase_student_token_${roomId}`) || '',
   getLastRoomId: () => safeGetItem('last_room_id'),
 
   saveId: (roomId: string, studentId: string) => safeSetItem(`student_id_${roomId}`, studentId),
   saveName: (roomId: string, name: string) => safeSetItem(`student_name_${roomId}`, name),
   saveSeatId: (roomId: string, seatId: string) => safeSetItem(`student_seat_id_${roomId}`, seatId),
   savePrevSeatId: (roomId: string, seatId: string) => safeSetItem(`student_prev_seat_id_${roomId}`, seatId),
-  saveToken: (token: string) => safeSetItem('supabase_student_token', token),
+  saveToken: (roomId: string, token: string) => safeSetItem(`supabase_student_token_${roomId}`, token),
   saveLastRoomId: (roomId: string) => safeSetItem('last_room_id', roomId),
 
   removeSeatId: (roomId: string) => safeRemoveItem(`student_seat_id_${roomId}`),

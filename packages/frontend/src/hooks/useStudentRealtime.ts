@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
+import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
 
 interface UseStudentRealtimeProps {
   supabase: SupabaseClient | null;
   studentClassroomId: string;
+  studentToken: string;
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void;
   onTeacherReset: () => void;
   onTeacherEvict: (seatId: string) => void;
@@ -14,6 +16,7 @@ interface UseStudentRealtimeProps {
 export function useStudentRealtime({
   supabase,
   studentClassroomId,
+  studentToken,
   addToast,
   onTeacherReset,
   onTeacherEvict,
@@ -65,13 +68,18 @@ export function useStudentRealtime({
       studentChannelRef.current = null;
     }
 
-    if (!supabase || !studentClassroomId.trim()) return;
+    if (!supabase || !studentClassroomId.trim() || !studentToken) return;
+    let cancelled = false;
 
-    const channel = supabase.channel(`room:${studentClassroomId}`, {
-      config: { broadcast: { self: true } },
-    });
+    void (async () => {
+      try {
+        const channel = await createAuthorizedPrivateChannel(supabase, studentToken, `room:${studentClassroomId}`);
+        if (cancelled) {
+          void supabase.removeChannel(channel);
+          return;
+        }
 
-    channel
+        channel
       .on('broadcast', { event: 'teacher_reset' }, (response) => {
         onTeacherResetRef.current();
       })
@@ -103,47 +111,48 @@ export function useStudentRealtime({
         }
       });
 
-    studentChannelRef.current = channel;
+        studentChannelRef.current = channel;
+      } catch (err) {
+        console.error('[Student] Realtime authorization failed:', err);
+        setIsFallbackActive(true);
+      }
+    })();
 
     return () => {
+      cancelled = true;
       if (studentChannelRef.current) {
         studentChannelRef.current.unsubscribe();
         studentChannelRef.current = null;
       }
     };
-  }, [supabase, studentClassroomId]);
+  }, [supabase, studentClassroomId, studentToken]);
 
   const sendStudentToTeacherBroadcast = useCallback(async (
     seatId: string,
     status: 'ok' | 'ng' | 'none',
-    studentName: string,
-    studentId: string,
-    comment?: string | null,
-    responseTime?: number
+    _studentName: string,
+    _studentId: string,
+    comment?: string | null
   ): Promise<'ok' | 'error'> => {
-    const channel = studentChannelRef.current;
-    if (!channel) return 'error';
+    if (!studentToken || !studentClassroomId) return 'error';
 
     try {
-      const res = await channel.send({
-        type: 'broadcast',
-        event: 'student_to_teacher',
-        payload: {
+      const apiUrl = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/rooms/${encodeURIComponent(studentClassroomId)}/student-event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
+        body: JSON.stringify({
           seatId,
           status,
-          studentName,
-          studentId,
           comment: comment || null,
-          responseTime,
-          updatedAt: new Date().toISOString(),
-        },
+        }),
       });
-      return res === 'ok' ? 'ok' : 'error';
+      return res.ok ? 'ok' : 'error';
     } catch (err) {
       console.error('Failed to send student broadcast:', err);
       return 'error';
     }
-  }, []);
+  }, [studentClassroomId, studentToken]);
 
   return {
     isFallbackActive,

@@ -138,11 +138,11 @@ export const LoginPage: React.FC = () => {
             </button>
           </form>
 
-          <div style={{ marginTop: '1.5rem', padding: '0.75rem', borderRadius: 'var(--border-radius)', backgroundColor: 'rgba(255, 255, 255, 0.03)', border: '1px dashed rgba(255, 255, 255, 0.1)', fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left' }}>
+          {import.meta.env.DEV && <div style={{ marginTop: '1.5rem', padding: '0.75rem', borderRadius: 'var(--border-radius)', backgroundColor: 'rgba(255, 255, 255, 0.03)', border: '1px dashed rgba(255, 255, 255, 0.1)', fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'left' }}>
             <span style={{ fontWeight: 'bold', color: 'var(--text-color)' }}>💡 初期デモアカウント：</span><br />
             ユーザー名: <code style={{ color: 'var(--color-teacher)', fontFamily: 'monospace' }}>teacher_admin</code><br />
             パスワード: <code style={{ color: 'var(--color-teacher)', fontFamily: 'monospace' }}>admin123</code>
-          </div>
+          </div>}
         </div>
       </main>
     </div>

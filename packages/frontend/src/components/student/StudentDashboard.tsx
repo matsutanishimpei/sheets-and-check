@@ -7,7 +7,7 @@ interface StudentDashboardProps {
   studentComment: string;
   setStudentComment: (val: string) => void;
   studentLiveSeatLocked: boolean;
-  onSendBroadcast: (status: 'ok' | 'ng', responseTime: number, overrideComment?: string) => void;
+  onSendBroadcast: (status: 'ok' | 'ng', overrideComment?: string) => Promise<boolean>;
   onChangeSeat: () => void;
   currentStatus: 'ok' | 'ng' | null;
 }
@@ -22,27 +22,28 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = React.memo(({
   onChangeSeat,
   currentStatus,
 }) => {
-  const startTimeRef = React.useRef<number>(Date.now());
+  const [isSending, setIsSending] = React.useState(false);
+  const [sendError, setSendError] = React.useState('');
 
-  // Reset timer on mount OR whenever currentStatus is cleared (meaning a new question session has started)
-  React.useEffect(() => {
-    if (currentStatus === null) {
-      startTimeRef.current = Date.now();
-    }
-  }, [currentStatus]);
-
-  const handleSend = (status: 'ok' | 'ng', overrideComment?: string) => {
+  const handleSend = async (status: 'ok' | 'ng', overrideComment?: string) => {
     if ('vibrate' in navigator) {
       try {
         navigator.vibrate(40);
       } catch (e) {}
     }
 
-    const now = Date.now();
-    const duration = now - startTimeRef.current;
-    onSendBroadcast(status, duration, overrideComment);
-    // Reset start time to measure subsequent status adjustments
-    startTimeRef.current = now;
+    setIsSending(true);
+    setSendError('');
+    try {
+      const success = await onSendBroadcast(status, overrideComment);
+      if (!success) {
+        setSendError('回答を送信できませんでした。通信状態を確認して再送してください。');
+      }
+    } catch {
+      setSendError('回答を送信できませんでした。通信状態を確認して再送してください。');
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -65,7 +66,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = React.memo(({
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', fontWeight: 700 }}>
-          {currentStatus === null ? (
+          {isSending ? (
+            <span style={{ color: 'var(--text-muted)' }}>送信中...</span>
+          ) : currentStatus === null ? (
             <span style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
               <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444', animation: 'bannerPulse 1.5s infinite alternate' }} />
               回答待ち
@@ -78,6 +81,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = React.memo(({
         </div>
       </div>
 
+      {sendError && (
+        <div role="alert" style={{ color: '#B5606A', fontSize: '0.85rem', fontWeight: 600, textAlign: 'center' }}>
+          {sendError}
+        </div>
+      )}
+
       {studentLiveSeatLocked && (
         <div className="lock-banner" style={{ marginTop: '0' }}>
           <Lock size={14} />
@@ -86,7 +95,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = React.memo(({
       )}
 
       {/* Mood Selector Buttons (Zero Typing / Absolute Single Line 2x3 Grid) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem', marginTop: '0.5rem' }}>
+      <fieldset disabled={isSending} style={{ border: 0, padding: 0, margin: '0.5rem 0 0', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
         {/* 1. 順調 */}
         <button
           className="quick-feedback-btn"
@@ -278,7 +287,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = React.memo(({
           <Thermometer size={28} />
           <span>暑い・寒い</span>
         </button>
-      </div>
+      </fieldset>
 
       {/* Change seat fallback (Only active when Teacher's seatLock is false!) */}
       <button
