@@ -7,7 +7,10 @@ import { useTeacherRealtime } from './useTeacherRealtime';
 
 describe('useTeacherRealtime authorization and Teacher events', () => {
   beforeEach(() => localStorage.clear());
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it('joins private authorized channels and sends the four Teacher control events', async () => {
     const mainSend = vi.fn().mockResolvedValue('ok');
@@ -106,7 +109,7 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
     },
   );
 
-  it('reports an answer inbox authorization failure and remains offline', async () => {
+  it('cleans up the main Channel when answer inbox authorization fails before subscription', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const mainChannel: any = {
       on: vi.fn(() => mainChannel),
@@ -140,8 +143,76 @@ describe('useTeacherRealtime authorization and Teacher events', () => {
       'リアルタイム認証に失敗しました。再ログインしてください。',
     ));
     expect(supabase.realtime.setAuth).toHaveBeenCalledTimes(2);
+    expect(supabase.removeChannel).toHaveBeenCalledWith(mainChannel);
     expect(mainChannel.subscribe).not.toHaveBeenCalled();
     expect(result.current.isOnline).toBe(false);
+  });
+
+  it('recreates the Teacher main Channel with status monitoring on retry', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const makeChannel = () => {
+      const channel: any = {
+        on: vi.fn(() => channel),
+        subscribe: vi.fn(),
+        send: vi.fn().mockResolvedValue('ok'),
+        unsubscribe: vi.fn(),
+      };
+      return channel;
+    };
+    const firstMainChannel = makeChannel();
+    const retryMainChannel = makeChannel();
+    const inboxChannel = makeChannel();
+    let mainChannelCount = 0;
+    const supabase: any = {
+      realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+      channel: vi.fn((topic: string) => {
+        if (topic.endsWith(':teacher')) return inboxChannel;
+        mainChannelCount += 1;
+        return mainChannelCount === 1 ? firstMainChannel : retryMainChannel;
+      }),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+    const setLiveStatuses = vi.fn();
+    const addToast = vi.fn();
+
+    const rendered = renderHook(() => useTeacherRealtime({
+      supabase,
+      realtimeToken: 'teacher-realtime-jwt',
+      roomId: 'room-1',
+      isSeatLocked: false,
+      setLiveStatuses,
+      addToast,
+    }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const inboxStatusHandler = inboxChannel.subscribe.mock.calls[0]?.[0];
+    const firstMainStatusHandler = firstMainChannel.subscribe.mock.calls[0]?.[0];
+    expect(inboxStatusHandler).toBeTypeOf('function');
+    expect(firstMainStatusHandler).toBeTypeOf('function');
+
+    act(() => {
+      inboxStatusHandler('SUBSCRIBED');
+      firstMainStatusHandler('CHANNEL_ERROR');
+    });
+    expect(rendered.result.current.isOnline).toBe(false);
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const retryStatusHandler = retryMainChannel.subscribe.mock.calls[0]?.[0];
+    expect(supabase.removeChannel).toHaveBeenCalledWith(firstMainChannel);
+    expect(retryStatusHandler).toBeTypeOf('function');
+
+    act(() => retryStatusHandler('SUBSCRIBED'));
+    expect(rendered.result.current.isOnline).toBe(true);
+    rendered.unmount();
   });
 
   it('removes online and offline listeners on every unmount', () => {

@@ -209,8 +209,8 @@ const routes = app
       }
       const room = await c.get('roomRepo').findById(roomId);
       if (!room || !room.isActive) return c.json({ error: 'Forbidden' }, 403);
-      const configuredUrl = c.env?.SUPABASE_URL?.replace(/\/$/, '');
-      const roomUrl = room.supabaseUrl?.replace(/\/$/, '');
+      const configuredUrl = c.env?.SUPABASE_URL ? normalizeSupabaseUrl(c.env.SUPABASE_URL) : '';
+      const roomUrl = room.supabaseUrl ? normalizeSupabaseUrl(room.supabaseUrl) : '';
       const serviceKey = c.env?.SUPABASE_SERVICE_ROLE_KEY?.trim();
       if (!configuredUrl || !serviceKey || configuredUrl !== roomUrl) throw new Error('Supabase relay configuration is missing or does not match the room');
       const relayTopic = `room:${roomId}:teacher`;

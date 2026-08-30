@@ -359,6 +359,23 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(relayBody).toMatchObject({ studentId: 'STU001', studentName: 'Claim Name' });
     });
 
+    it('normalizes repeated trailing slashes for Room comparison and relay URL generation', async () => {
+      mockRepo.roomsTable[0].supabaseUrl = '  https://test-sb-1.supabase.co///  ';
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 202 }));
+      const token = await studentToken();
+      const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ seatId: '1,1', status: 'ok' }),
+      }, { ...relayEnv, SUPABASE_URL: '  https://test-sb-1.supabase.co/  ' });
+
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://test-sb-1.supabase.co/realtime/v1/api/broadcast/room%3Atest-room-uuid-1%3Ateacher/events/student_to_teacher?private=true',
+        expect.any(Object),
+      );
+    });
+
     it('rejects a Student token from another room', async () => {
       const token = await studentToken('another-room');
       const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
@@ -482,15 +499,15 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
-    it('allows a trailing slash difference for the same production Supabase project', async () => {
+    it('allows repeated trailing slash differences for the same production Supabase project', async () => {
       const response = await testApp.request('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify(roomPayload(`${configuredSupabaseUrl}/`)),
-      }, productionEnv());
+        body: JSON.stringify(roomPayload(`${configuredSupabaseUrl}///`)),
+      }, productionEnv(`${configuredSupabaseUrl}/`));
 
       expect(response.status).toBe(201);
-      expect(mockRepo.roomsTable.some((room) => room.supabaseUrl === `${configuredSupabaseUrl}/`)).toBe(true);
+      expect(mockRepo.roomsTable.some((room) => room.supabaseUrl === `${configuredSupabaseUrl}///`)).toBe(true);
     });
 
     it('fails closed when production SUPABASE_URL is absent without changing the Repository', async () => {

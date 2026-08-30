@@ -25,6 +25,7 @@ export function useStudentRealtime({
 }: UseStudentRealtimeProps) {
   const [isFallbackActive, setIsFallbackActive] = useState(false);
   const studentChannelRef = useRef<RealtimeChannel | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const addToastRef = useRef(addToast);
   const onTeacherResetRef = useRef(onTeacherReset);
@@ -67,63 +68,99 @@ export function useStudentRealtime({
       studentChannelRef.current.unsubscribe();
       studentChannelRef.current = null;
     }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
 
     if (!supabase || !studentClassroomId.trim() || !studentToken) return;
     let cancelled = false;
 
-    void (async () => {
+    const removeChannel = async (channel: RealtimeChannel) => {
+      try {
+        await supabase.removeChannel(channel);
+      } catch (err) {
+        console.warn('[Student] Failed to remove Realtime channel:', err);
+      }
+    };
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
+
+    const handleStatus = (channel: RealtimeChannel, status: string) => {
+      if (cancelled || studentChannelRef.current !== channel) return;
+      if (status === 'SUBSCRIBED') {
+        clearReconnectTimer();
+        setIsFallbackActive(false);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        console.warn(`[Student] Realtime subscription status failed: ${status}. Fallback activated.`);
+        setIsFallbackActive(true);
+        addToastRef.current('warning', 'リアルタイム接続に失敗しました。教室の接続設定に問題がある可能性があります。教員に確認してください。バックアップの自動同期へ移行しました。');
+        clearReconnectTimer();
+        reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null;
+          void retrySubscription(channel);
+        }, 10000);
+      }
+    };
+
+    const subscribeChannel = (channel: RealtimeChannel) => {
+      channel
+        .on('broadcast', { event: 'teacher_reset' }, () => {
+          onTeacherResetRef.current();
+        })
+        .on('broadcast', { event: 'student_evicted' }, (response) => {
+          if (response.payload && typeof response.payload.seatId === 'string') {
+            onTeacherEvictRef.current(response.payload.seatId);
+          }
+        })
+        .on('broadcast', { event: 'teacher_lock_state' }, (response) => {
+          if (response.payload && typeof response.payload.locked === 'boolean') {
+            onTeacherLockStateRef.current(response.payload.locked);
+          }
+        })
+        .on('broadcast', { event: 'room_layout_updated' }, () => {
+          onRoomLayoutUpdatedRef.current();
+        });
+
+      studentChannelRef.current = channel;
+      channel.subscribe((status) => handleStatus(channel, status));
+    };
+
+    const startSubscription = async () => {
       try {
         const channel = await createAuthorizedPrivateChannel(supabase, studentToken, `room:${studentClassroomId}`);
         if (cancelled) {
-          void supabase.removeChannel(channel);
+          await removeChannel(channel);
           return;
         }
-
-        channel
-      .on('broadcast', { event: 'teacher_reset' }, (response) => {
-        onTeacherResetRef.current();
-      })
-      .on('broadcast', { event: 'student_evicted' }, (response) => {
-        if (response.payload && typeof response.payload.seatId === 'string') {
-          onTeacherEvictRef.current(response.payload.seatId);
-        }
-      })
-      .on('broadcast', { event: 'teacher_lock_state' }, (response) => {
-        if (response.payload && typeof response.payload.locked === 'boolean') {
-          onTeacherLockStateRef.current(response.payload.locked);
-        }
-      })
-      .on('broadcast', { event: 'room_layout_updated' }, (response) => {
-        onRoomLayoutUpdatedRef.current();
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setIsFallbackActive(false);
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn(`[Student] Realtime subscription status failed: ${status}. Fallback activated.`);
-          setIsFallbackActive(true);
-          addToastRef.current('warning', 'リアルタイム接続に失敗しました。教室の接続設定に問題がある可能性があります。教員に確認してください。バックアップの自動同期へ移行しました。');
-          setTimeout(() => {
-            if (studentChannelRef.current) {
-              studentChannelRef.current.subscribe();
-            }
-          }, 10000);
-        }
-      });
-
-        studentChannelRef.current = channel;
+        subscribeChannel(channel);
       } catch (err) {
+        if (cancelled) return;
         console.error('[Student] Realtime authorization failed:', err);
         setIsFallbackActive(true);
       }
-    })();
+    };
+
+    async function retrySubscription(failedChannel: RealtimeChannel) {
+      if (cancelled || studentChannelRef.current !== failedChannel) return;
+      studentChannelRef.current = null;
+      await removeChannel(failedChannel);
+      if (!cancelled) await startSubscription();
+    }
+
+    void startSubscription();
 
     return () => {
       cancelled = true;
-      if (studentChannelRef.current) {
-        studentChannelRef.current.unsubscribe();
-        studentChannelRef.current = null;
-      }
+      clearReconnectTimer();
+      const channel = studentChannelRef.current;
+      studentChannelRef.current = null;
+      if (channel) void removeChannel(channel);
     };
   }, [supabase, studentClassroomId, studentToken]);
 

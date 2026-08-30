@@ -90,42 +90,32 @@ export function useTeacherRealtime({
     setIsOnline(false);
 
     if (!supabase || !roomId || !realtimeToken) return;
+    const realtimeClient = supabase;
     let cancelled = false;
 
-    void (async () => {
+    const removeChannel = async (channel: RealtimeChannel) => {
       try {
-        const channel = await createAuthorizedPrivateChannel(supabase, realtimeToken, `room:${roomId}`);
-        const inbox = await createAuthorizedPrivateChannel(supabase, realtimeToken, `room:${roomId}:teacher`);
-        if (cancelled) {
-          void supabase.removeChannel(channel);
-          void supabase.removeChannel(inbox);
-          return;
-        }
+        await realtimeClient.removeChannel(channel);
+      } catch (err) {
+        console.warn('[Teacher] Failed to remove Realtime channel:', err);
+      }
+    };
 
-        const handleInboxStatus = (status: string) => {
-          if (cancelled) return;
-          if (status === 'SUBSCRIBED') {
-            inboxSubscribedRef.current = true;
-            updateRealtimeOnlineState();
-            console.log(`[Teacher] Successfully subscribed to answer inbox: ${roomId}`);
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-            inboxSubscribedRef.current = false;
-            updateRealtimeOnlineState();
-            console.error(`[Teacher] Answer inbox subscription failed: ${status}`);
-            addToastRef.current('error', '学生回答の受信Channelに接続できません。Realtime設定と認可を確認してください。');
-            if (inboxReconnectTimeoutRef.current) {
-              clearTimeout(inboxReconnectTimeoutRef.current);
-            }
-            inboxReconnectTimeoutRef.current = setTimeout(() => {
-              if (teacherInboxRef.current) {
-                teacherInboxRef.current.subscribe(handleInboxStatus);
-              }
-            }, 10000);
-          }
-        };
+    const clearMainReconnectTimer = () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
 
-        inbox
-          .on('broadcast', { event: 'student_to_teacher' }, (response) => {
+    const clearInboxReconnectTimer = () => {
+      if (inboxReconnectTimeoutRef.current) {
+        clearTimeout(inboxReconnectTimeoutRef.current);
+        inboxReconnectTimeoutRef.current = null;
+      }
+    };
+
+    const handleStudentResponse = (response: { payload: any }) => {
         const payload = response.payload;
         if (payload && payload.seatId && payload.status) {
           const receivedAt = new Date().toLocaleTimeString('ja-JP');
@@ -167,64 +157,138 @@ export function useTeacherRealtime({
             playAlertSound();
           }
         }
-          })
-          .subscribe(handleInboxStatus);
+    };
 
-        channel.subscribe((status) => {
-        if (cancelled) return;
-        if (status === 'SUBSCRIBED') {
-          mainSubscribedRef.current = true;
-          updateRealtimeOnlineState();
-          console.log(`[Teacher] Successfully subscribed to channel: ${roomId}`);
-          channel.send({
-            type: 'broadcast',
-            event: 'teacher_lock_state',
-            payload: { locked: isSeatLockedRef.current },
-          });
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          mainSubscribedRef.current = false;
-          updateRealtimeOnlineState();
-          console.warn(`[Teacher] Realtime subscription failed: ${status}. Scheduling auto-reconnect in 10s...`);
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-          }
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (teacherChannelRef.current) {
-              teacherChannelRef.current.subscribe();
-            }
-          }, 10000);
-        }
+    const handleMainStatus = (channel: RealtimeChannel, status: string) => {
+      if (cancelled || teacherChannelRef.current !== channel) return;
+      if (status === 'SUBSCRIBED') {
+        clearMainReconnectTimer();
+        mainSubscribedRef.current = true;
+        updateRealtimeOnlineState();
+        console.log(`[Teacher] Successfully subscribed to channel: ${roomId}`);
+        void channel.send({
+          type: 'broadcast',
+          event: 'teacher_lock_state',
+          payload: { locked: isSeatLockedRef.current },
         });
-
-        teacherChannelRef.current = channel;
-        teacherInboxRef.current = inbox;
-      } catch (err) {
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         mainSubscribedRef.current = false;
+        updateRealtimeOnlineState();
+        console.warn(`[Teacher] Realtime subscription failed: ${status}. Scheduling auto-reconnect in 10s...`);
+        clearMainReconnectTimer();
+        reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null;
+          void retryMainChannel(channel);
+        }, 10000);
+      }
+    };
+
+    const handleInboxStatus = (inbox: RealtimeChannel, status: string) => {
+      if (cancelled || teacherInboxRef.current !== inbox) return;
+      if (status === 'SUBSCRIBED') {
+        clearInboxReconnectTimer();
+        inboxSubscribedRef.current = true;
+        updateRealtimeOnlineState();
+        console.log(`[Teacher] Successfully subscribed to answer inbox: ${roomId}`);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         inboxSubscribedRef.current = false;
-        setIsOnline(false);
-        console.error('[Teacher] Realtime authorization failed:', err);
-        addToastRef.current('error', 'リアルタイム認証に失敗しました。再ログインしてください。');
+        updateRealtimeOnlineState();
+        console.error(`[Teacher] Answer inbox subscription failed: ${status}`);
+        addToastRef.current('error', '学生回答の受信Channelに接続できません。Realtime設定と認可を確認してください。');
+        clearInboxReconnectTimer();
+        inboxReconnectTimeoutRef.current = setTimeout(() => {
+          inboxReconnectTimeoutRef.current = null;
+          void retryInboxChannel(inbox);
+        }, 10000);
+      }
+    };
+
+    const subscribeMainChannel = (channel: RealtimeChannel) => {
+      teacherChannelRef.current = channel;
+      channel.subscribe((status) => handleMainStatus(channel, status));
+    };
+
+    const subscribeInboxChannel = (inbox: RealtimeChannel) => {
+      inbox.on('broadcast', { event: 'student_to_teacher' }, handleStudentResponse);
+      teacherInboxRef.current = inbox;
+      inbox.subscribe((status) => handleInboxStatus(inbox, status));
+    };
+
+    const reportAuthorizationFailure = (err: unknown) => {
+      mainSubscribedRef.current = false;
+      inboxSubscribedRef.current = false;
+      setIsOnline(false);
+      console.error('[Teacher] Realtime authorization failed:', err);
+      addToastRef.current('error', 'リアルタイム認証に失敗しました。再ログインしてください。');
+    };
+
+    async function retryMainChannel(failedChannel: RealtimeChannel) {
+      if (cancelled || teacherChannelRef.current !== failedChannel) return;
+      teacherChannelRef.current = null;
+      await removeChannel(failedChannel);
+      if (cancelled) return;
+      try {
+        const replacement = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}`);
+        if (cancelled) {
+          await removeChannel(replacement);
+          return;
+        }
+        subscribeMainChannel(replacement);
+      } catch (err) {
+        if (!cancelled) reportAuthorizationFailure(err);
+      }
+    }
+
+    async function retryInboxChannel(failedInbox: RealtimeChannel) {
+      if (cancelled || teacherInboxRef.current !== failedInbox) return;
+      teacherInboxRef.current = null;
+      await removeChannel(failedInbox);
+      if (cancelled) return;
+      try {
+        const replacement = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}:teacher`);
+        if (cancelled) {
+          await removeChannel(replacement);
+          return;
+        }
+        subscribeInboxChannel(replacement);
+      } catch (err) {
+        if (!cancelled) reportAuthorizationFailure(err);
+      }
+    }
+
+    void (async () => {
+      let channel: RealtimeChannel | null = null;
+      let inbox: RealtimeChannel | null = null;
+      try {
+        channel = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}`);
+        if (cancelled) {
+          await removeChannel(channel);
+          return;
+        }
+        inbox = await createAuthorizedPrivateChannel(realtimeClient, realtimeToken, `room:${roomId}:teacher`);
+        if (cancelled) {
+          await Promise.all([removeChannel(channel), removeChannel(inbox)]);
+          return;
+        }
+
+        subscribeInboxChannel(inbox);
+        subscribeMainChannel(channel);
+      } catch (err) {
+        await Promise.all([channel, inbox].filter((item): item is RealtimeChannel => item !== null).map(removeChannel));
+        if (!cancelled) reportAuthorizationFailure(err);
       }
     })();
 
     return () => {
       cancelled = true;
-      if (teacherChannelRef.current) {
-        teacherChannelRef.current.unsubscribe();
-        teacherChannelRef.current = null;
-      }
-      if (teacherInboxRef.current) {
-        teacherInboxRef.current.unsubscribe();
-        teacherInboxRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      if (inboxReconnectTimeoutRef.current) {
-        clearTimeout(inboxReconnectTimeoutRef.current);
-        inboxReconnectTimeoutRef.current = null;
-      }
+      clearMainReconnectTimer();
+      clearInboxReconnectTimer();
+      const channel = teacherChannelRef.current;
+      const inbox = teacherInboxRef.current;
+      teacherChannelRef.current = null;
+      teacherInboxRef.current = null;
+      if (channel) void removeChannel(channel);
+      if (inbox) void removeChannel(inbox);
     };
   }, [supabase, roomId, realtimeToken, setLiveStatuses, updateRealtimeOnlineState]);
 

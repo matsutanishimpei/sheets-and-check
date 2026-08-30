@@ -15,7 +15,10 @@ const props = {
 };
 
 describe('useStudentRealtime Student answer relay', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it('reports success only for a successful Worker response and sends no client identity', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
@@ -93,5 +96,71 @@ describe('useStudentRealtime Student answer relay', () => {
     expect(callbacks.onTeacherEvict).toHaveBeenCalledWith('1,1');
     expect(callbacks.onTeacherLockState).toHaveBeenCalledWith(true);
     expect(callbacks.onRoomLayoutUpdated).toHaveBeenCalledOnce();
+  });
+
+  it('activates fallback on CLOSED and retries with status monitoring until SUBSCRIBED', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const makeChannel = () => {
+      const channel: any = {
+        on: vi.fn(() => channel),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn(),
+      };
+      return channel;
+    };
+    const firstChannel = makeChannel();
+    const retryChannel = makeChannel();
+    const supabase: any = {
+      realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+      channel: vi.fn()
+        .mockReturnValueOnce(firstChannel)
+        .mockReturnValueOnce(retryChannel),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+
+    const { result } = renderHook(() => useStudentRealtime({ ...props, supabase }));
+    await act(async () => undefined);
+    const firstStatusHandler = firstChannel.subscribe.mock.calls[0]?.[0];
+    expect(firstStatusHandler).toBeTypeOf('function');
+
+    act(() => firstStatusHandler('CLOSED'));
+    expect(result.current.isFallbackActive).toBe(true);
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000);
+      await Promise.resolve();
+    });
+    const retryStatusHandler = retryChannel.subscribe.mock.calls[0]?.[0];
+    expect(supabase.removeChannel).toHaveBeenCalledWith(firstChannel);
+    expect(retryStatusHandler).toBeTypeOf('function');
+
+    act(() => retryStatusHandler('SUBSCRIBED'));
+    expect(result.current.isFallbackActive).toBe(false);
+  });
+
+  it('does not retry after unmount', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const channel: any = {
+      on: vi.fn(() => channel),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+    };
+    const supabase: any = {
+      realtime: { setAuth: vi.fn().mockResolvedValue(undefined) },
+      channel: vi.fn(() => channel),
+      removeChannel: vi.fn().mockResolvedValue('ok'),
+    };
+
+    const rendered = renderHook(() => useStudentRealtime({ ...props, supabase }));
+    await act(async () => undefined);
+    const statusHandler = channel.subscribe.mock.calls[0]?.[0];
+    act(() => statusHandler('TIMED_OUT'));
+    rendered.unmount();
+    act(() => vi.advanceTimersByTime(10000));
+
+    expect(supabase.channel).toHaveBeenCalledTimes(1);
+    expect(supabase.removeChannel).toHaveBeenCalledWith(channel);
   });
 });
