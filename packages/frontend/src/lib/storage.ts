@@ -83,18 +83,6 @@ export const teacherAuth = {
   },
 };
 
-// ── Supabase Config ──────────────────────────────────────────────────
-
-export const supabaseConfig = {
-  getUrl: () => safeGetItem('sb_url') || '',
-  getKey: () => safeGetItem('sb_key') || '',
-
-  save: (url: string, key: string) => {
-    safeSetItem('sb_url', url);
-    safeSetItem('sb_key', key);
-  },
-};
-
 // ── Active Teacher Room ──────────────────────────────────────────────
 
 export const activeRoom = {

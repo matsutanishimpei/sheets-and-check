@@ -15,12 +15,6 @@ export const TeacherLayoutPage: React.FC = () => {
       <TeacherHeader activePage="layout" subtitle="教室設定" onLogout={handleLogout} />
 
       <TeacherView
-        supabase={session.supabase}
-        supabaseUrl={session.supabaseUrl}
-        setSupabaseUrl={session.setSupabaseUrl}
-        supabaseAnonKey={session.supabaseAnonKey}
-        setSupabaseAnonKey={session.setSupabaseAnonKey}
-        onSaveSupabaseConfig={session.saveSupabaseConfig}
         roomName={session.roomName}
         setRoomName={session.setRoomName}
         onCreateNewSession={session.createNewClassroomSession}

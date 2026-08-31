@@ -108,11 +108,6 @@ export const TeacherMonitorPage: React.FC = () => {
             {/* Permanent Settings & QR Drawer at the bottom */}
             <MonitorSettingsDrawer 
               roomId={session.roomId}
-              supabaseUrl={session.supabaseUrl}
-              supabaseAnonKey={session.supabaseAnonKey}
-              setSupabaseUrl={session.setSupabaseUrl}
-              setSupabaseAnonKey={session.setSupabaseAnonKey}
-              onSaveSupabaseConfig={session.saveSupabaseConfig}
             />
           </div>
         ) : (

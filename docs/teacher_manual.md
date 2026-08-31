@@ -29,7 +29,7 @@
    * ❌ **空き (または障害物)**: 通路や柱など、席がない場所を設定します。
 5. 配置が完了したら、右上の **「教室を保存」** ボタンをクリックして保存します。
 
-Supabase接続設定には運用者が用意した単一ProjectのURLと公開anon keyを使用します。本番ではWorkerの `SUPABASE_URL` と異なるProjectを保存できません。service role keyやJWT secretを入力しないでください。
+Supabase接続は運用者がPages環境変数へ設定するため、教員画面でURLやkeyを入力する必要はありません。
 
 ---
 

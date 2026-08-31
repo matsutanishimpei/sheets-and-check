@@ -8,8 +8,8 @@ erDiagram
         text id PK
         text name
         text layout_data "Grid JSON"
-        text supabase_url "単一Project URL"
-        text supabase_anon_key "公開legacy anon key"
+        text supabase_url "legacy・未使用"
+        text supabase_anon_key "legacy・未使用"
         integer is_active
     }
     TEACHERS {
@@ -21,7 +21,7 @@ erDiagram
     }
 ```
 
-RoomとTeacherの間に所有者foreign keyはありません。現行Teacherは認証後に全Roomを管理できます。`service_role` key、JWT secret、Teacher JWTはD1へ保存しません。
+RoomとTeacherの間に所有者foreign keyはありません。現行Teacherは認証後に全Roomを管理できます。`supabase_url` / `supabase_anon_key` は既存DB互換のため残しますが、アプリケーションから読み書きしません。`service_role` key、JWT secret、Teacher JWTはD1へ保存しません。
 
 ## Supabase Realtime（揮発性）
 

@@ -20,11 +20,6 @@ const mocks = vi.hoisted(() => ({
     liveStatuses: {},
     removeLiveStatus: vi.fn(),
     realtimeLogs: [],
-    supabaseUrl: 'https://test.supabase.co',
-    supabaseAnonKey: 'anon-key',
-    setSupabaseUrl: vi.fn(),
-    setSupabaseAnonKey: vi.fn(),
-    saveSupabaseConfig: vi.fn(),
   },
 }));
 

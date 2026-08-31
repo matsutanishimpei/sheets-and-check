@@ -44,13 +44,11 @@ Roomの公開参加情報を返します。認証はありません。
   "id": "<room-uuid>",
   "name": "講義室A",
   "grid": [{ "x": 1, "y": 1, "type": "student" }],
-  "isActive": true,
-  "supabaseUrl": "https://<project-ref>.supabase.co",
-  "supabaseAnonKey": "<public-anon-key>"
+  "isActive": true
 }
 ```
 
-`404`: Roomなし。`500`: Repository障害。`supabaseAnonKey` は現行Supabase client接続用のlegacy公開anon keyです。service role keyは返しません。
+`404`: Roomなし。`500`: Repository障害。Supabase URL/keyは返しません。
 
 ### `POST /api/rooms/:id/student-token`
 
@@ -93,7 +91,7 @@ Request header: `Authorization: Bearer <STUDENT_SUPABASE_JWT>`
 - `401`: JWTなし、無効、期限切れ、別Room、claim不正
 - `403`: Roomなしまたは受付停止（存在有無を区別しません）
 - `502 { "error": "Student event could not be delivered", "code": "RT-RELAY-01" }`: Supabase relay通信・非2xx
-- `503 { "error": "Student event could not be delivered", "code": "CFG-SB-01" }`: WorkerのSupabase設定不足またはRoom Project不一致
+- `503 { "error": "Student event could not be delivered", "code": "CFG-SB-01" }`: WorkerのSupabase relay設定不足
 - `500`: その他の内部障害
 
 Supabaseの非2xx本文はユーザーへ返しません。
@@ -130,19 +128,15 @@ Request:
 {
   "name": "講義室A",
   "grid": [{ "x": 1, "y": 1, "type": "student" }],
-  "supabaseUrl": "https://<project-ref>.supabase.co",
-  "supabaseAnonKey": "<public-anon-key>",
   "isActive": true
 }
 ```
 
-`201`: UUIDを付与したRoom。`400`: validationまたはProject不一致。`413`: 本文超過。`503`: production `SUPABASE_URL` 未設定。`500`: Repository障害。
-
-productionでは `normalize(request.supabaseUrl) == normalize(Worker SUPABASE_URL)` が必須です。`normalize` は前後空白と末尾の `/` を個数に関係なく除去します。Project不一致・設定不備は `CFG-SB-01` で、Repositoryへ書き込む前に拒否します。
+`201`: UUIDを付与したRoom。`400`: validation（Supabase接続fieldを含む余分なfieldも拒否）。`413`: 本文超過。`500`: Repository障害。
 
 ### `PUT /api/rooms/:id`
 
-RequestとProject検証はPOSTと同じです。`200`: 更新済みRoom。`400`: validationまたはProject不一致。`404`: Roomなし。`413`: 本文超過。`503`: production設定不足。`500`: Repository障害。不一致時は既存Roomを変更しません。
+Request validationはPOSTと同じです。`200`: 更新済みRoom。`400`: validation。`404`: Roomなし。`413`: 本文超過。`500`: Repository障害。
 
 ### `PATCH /api/rooms/:id/status`
 

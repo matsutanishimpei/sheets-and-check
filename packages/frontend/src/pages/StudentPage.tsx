@@ -14,9 +14,6 @@ export const StudentPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
 
-  // Supabase Config states
-  const [supabaseUrl, setSupabaseUrl] = useState('');
-  const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
   const [isRoomActive, setIsRoomActive] = useState(true);
   const [studentToken, setStudentToken] = useState(() => roomId ? studentSession.getToken(roomId) : '');
 
@@ -54,28 +51,21 @@ export const StudentPage: React.FC = () => {
         const active = data.isActive !== false;
         setIsRoomActive(active);
 
-        if (data.supabaseUrl && data.supabaseAnonKey) {
-          setSupabaseUrl(data.supabaseUrl);
-          setSupabaseAnonKey(data.supabaseAnonKey);
-
-          // Dynamically pre-fetch student JWT token if already logged in previously
-          if (storedId && storedName) {
-            try {
-              const tokenRes = await client.api.rooms[':id']['student-token'].$post({
-                param: { id: cleanUuid },
-                json: { studentId: storedId, name: storedName }
-              });
-              if (tokenRes.ok) {
-                const tokenData = await tokenRes.json();
-                studentSession.saveToken(cleanUuid, tokenData.supabaseToken);
-                setStudentToken(tokenData.supabaseToken);
-              }
-            } catch (jwtErr) {
-              console.error('Failed to pre-fetch student realtime token:', jwtErr);
+        // Dynamically pre-fetch student JWT token if already logged in previously
+        if (storedId && storedName) {
+          try {
+            const tokenRes = await client.api.rooms[':id']['student-token'].$post({
+              param: { id: cleanUuid },
+              json: { studentId: storedId, name: storedName }
+            });
+            if (tokenRes.ok) {
+              const tokenData = await tokenRes.json();
+              studentSession.saveToken(cleanUuid, tokenData.supabaseToken);
+              setStudentToken(tokenData.supabaseToken);
             }
+          } catch (jwtErr) {
+            console.error('Failed to pre-fetch student realtime token:', jwtErr);
           }
-        } else {
-          addToast('error', 'この教室はまだ教員による Supabase 接続設定が保存されていません。教員に確認してください。');
         }
 
         const gridObj: Record<string, GridItem['type']> = {};
@@ -109,7 +99,7 @@ export const StudentPage: React.FC = () => {
     }
   }, [addToast]);
 
-  const { supabase } = useSupabaseClient(supabaseUrl, supabaseAnonKey, studentToken);
+  const { supabase } = useSupabaseClient(studentToken);
 
   const {
     isFallbackActive,
@@ -222,33 +212,26 @@ export const StudentPage: React.FC = () => {
         const active = data.isActive !== false;
         setIsRoomActive(active);
 
-        if (data.supabaseUrl && data.supabaseAnonKey) {
-          setSupabaseUrl(data.supabaseUrl);
-          setSupabaseAnonKey(data.supabaseAnonKey);
-
-          // Retrieve student Supabase Access Token (JWT) from backend to lock down Realtime channels
-          try {
-            const tokenRes = await client.api.rooms[':id']['student-token'].$post({
-              param: { id: studentClassroomId.trim() },
-              json: {
-                studentId: studentId.trim(),
-                name: studentName.trim()
-              }
-            });
-
-            if (tokenRes.ok) {
-              const tokenData = await tokenRes.json();
-              studentSession.saveToken(studentClassroomId.trim(), tokenData.supabaseToken);
-              setStudentToken(tokenData.supabaseToken);
-            } else {
-              throw new Error('Supabase 認証トークンの取得に失敗しました');
+        // Retrieve student Supabase Access Token (JWT) from backend to lock down Realtime channels
+        try {
+          const tokenRes = await client.api.rooms[':id']['student-token'].$post({
+            param: { id: studentClassroomId.trim() },
+            json: {
+              studentId: studentId.trim(),
+              name: studentName.trim()
             }
-          } catch (tokenErr: any) {
-            console.error('リアルタイム通信の認証に失敗しました:', tokenErr);
-            return;
+          });
+
+          if (tokenRes.ok) {
+            const tokenData = await tokenRes.json();
+            studentSession.saveToken(studentClassroomId.trim(), tokenData.supabaseToken);
+            setStudentToken(tokenData.supabaseToken);
+          } else {
+            throw new Error('Supabase 認証トークンの取得に失敗しました');
           }
-        } else {
-          addToast('error', 'この教室はまだ教員による Supabase 接続設定が保存されていません。教員に確認してください。');
+        } catch (tokenErr: any) {
+          console.error('リアルタイム通信の認証に失敗しました:', tokenErr);
+          return;
         }
 
         const gridObj: Record<string, GridItem['type']> = {};
@@ -323,11 +306,6 @@ export const StudentPage: React.FC = () => {
             <LayoutGrid size={24} style={{ color: 'var(--color-student)' }} />
           </div>
           <h1 className="header-title">Seats & Check</h1>
-        </div>
-        <div className="header-status">
-          <span className={`supabase-badge ${supabase ? '' : 'disconnected'}`}>
-            {supabase ? 'Realtime 有効' : 'Supabase 未接続'}
-          </span>
         </div>
       </header>
 

@@ -26,14 +26,5 @@ export const SaveRoomLayoutInputSchema = z.object({
       occupied.add(coordinate);
     });
   }),
-  supabaseUrl: z.string().trim().min(1, 'Supabase URL is required').max(2048).url('Supabase URL must be valid').refine((value) => {
-    try {
-      const url = new URL(value);
-      return url.protocol === 'https:' && !url.username && !url.password;
-    } catch {
-      return false;
-    }
-  }, 'Supabase URL must be an HTTPS URL without embedded credentials'),
-  supabaseAnonKey: z.string().trim().min(1, 'Supabase Anon Key is required').max(4096),
   isActive: z.boolean().optional(),
 }).strict();

@@ -10,7 +10,7 @@
 | `RT-T-INBOX-01` | Teacher回答Inbox接続失敗 | TeacherブラウザConsole | Teacher JWT、Inbox SELECT Policy、Channel topic |
 | `RT-S-CHANNEL-01` | Student Channel接続失敗 | StudentブラウザConsole | Student JWT期限・roomId、RLS、Project設定 |
 | `RT-RELAY-01` | Worker→Supabase回答relay失敗 | Cloudflare Worker logs | relay HTTP status、truncate済みSupabase response、Project稼働状態 |
-| `CFG-SB-01` | Supabase Project不一致・Worker設定不足 | Cloudflare Worker logs | Worker `SUPABASE_URL`、service role key、Room Project |
+| `CFG-SB-01` | WorkerのSupabase relay設定不足 | Cloudflare Worker logs | Worker `SUPABASE_URL`、service role key |
 | `AUTH-T-01` | Teacher認証の代表的障害 | Browser + Worker logs | `JWT_SECRET`、Teacher account、Token期限、rate limit |
 | `DEPLOY-01` | production deploy失敗（Runbook上の分類） | GitHub Actions | install/build/typecheck/test/D1/deployの失敗step |
 | `KEEPALIVE-01` | Supabase Keep Alive失敗（Runbook上の分類） | GitHub Actions | URL/key、Project pause、REST API応答 |
@@ -46,7 +46,7 @@ Cloudflare Dashboardの **Workers & Pages → 対象Worker → Logs** からも�
 
 `RT-RELAY-01` は `operation`、`roomId`、Supabase HTTP `status`、最大1000文字でCredential伏字済みの `response` を記録します。ネットワーク例外時は安全に整形したerror name/messageを記録します。ユーザーのHTTPレスポンスにはSupabase responseを返しません。
 
-`CFG-SB-01` はProject URL自体やkeyを記録せず、処理名、Room ID、statusだけを記録します。Room POST/PUTならWorkerの `SUPABASE_URL` とRoom入力の前後空白・末尾 `/` を正規化して比較します。relayなら `SUPABASE_SERVICE_ROLE_KEY` の設定も確認しますが、値を出力しません。
+`CFG-SB-01` はProject URL自体やkeyを記録せず、処理名、Room ID、statusだけを記録します。relayの `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` の設定を確認しますが、値を出力しません。
 
 ## GitHub Actions
 
@@ -95,7 +95,6 @@ Cloudflare Dashboardの **Workers & Pages → 対象Worker → Logs** からも�
 ### CFG-SB-01
 
 - Workerの `SUPABASE_URL` が対象単一Projectか。
-- Roomの `supabaseUrl` が同じProjectか。末尾 `/` の個数だけなら許可される。
 - relay時はservice role keyが設定済みか。URL・key実値をログへ出さない。
 
 ### AUTH-T-01

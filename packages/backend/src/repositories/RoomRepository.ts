@@ -4,8 +4,6 @@ export interface RoomLayout {
   id: string;
   name: string;
   grid: GridItem[];
-  supabaseUrl: string | null;
-  supabaseAnonKey: string | null;
   isActive: boolean;
 }
 
