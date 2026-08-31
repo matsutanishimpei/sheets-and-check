@@ -1,18 +1,10 @@
 import { useState, useEffect } from 'react';
 import client from '../lib/hc';
 import { GridItem } from '@my-app/shared';
-import { createClient } from '@supabase/supabase-js';
-import { activeRoom, supabaseConfig, teacherAuth } from '../lib/storage';
+import { activeRoom, teacherAuth } from '../lib/storage';
 import { readResponseBody, extractErrorMessage } from '../lib/apiResponse';
 import { createAuthorizedPrivateChannel } from '../lib/realtimeChannel';
-
-const cleanSupabaseUrl = (url: string): string => {
-  return url
-    .trim()
-    .replace(/\/realtime\/v1\/?$/, '')
-    .replace(/\/rest\/v1\/?$/, '')
-    .trim();
-};
+import { createEnvironmentSupabaseClient } from './useSupabaseClient';
 
 export interface EditorCase {
   caseName: string;
@@ -22,19 +14,11 @@ export interface EditorCase {
 interface UseRoomLayoutProps {
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void;
   onClearLiveStatuses: () => void;
-  supabaseUrl: string;
-  supabaseAnonKey: string;
-  setSupabaseUrl: (val: string) => void;
-  setSupabaseAnonKey: (val: string) => void;
 }
 
 export function useRoomLayout({
   addToast,
   onClearLiveStatuses,
-  supabaseUrl,
-  supabaseAnonKey,
-  setSupabaseUrl,
-  setSupabaseAnonKey,
 }: UseRoomLayoutProps) {
   const [roomName, setRoomName] = useState('一般講義室 301');
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -42,7 +26,7 @@ export function useRoomLayout({
     { caseName: '通常講義 (標準)', grid: {} }
   ]);
   const [activeCaseIdx, setActiveCaseIdx] = useState(0);
-  const [savedRooms, setSavedRooms] = useState<{ id: string; name: string; supabaseUrl?: string; supabaseAnonKey?: string; }[]>([]);
+  const [savedRooms, setSavedRooms] = useState<{ id: string; name: string; isActive: boolean }[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingRooms, setIsLoadingRooms] = useState(false);
   const [isActive, setIsActive] = useState(true);
@@ -84,10 +68,6 @@ export function useRoomLayout({
           console.warn('Failed to save room ID to localStorage:', e);
         }
 
-        // Load Supabase configurations into state
-        setSupabaseUrl(data.supabaseUrl);
-        setSupabaseAnonKey(data.supabaseAnonKey);
-
         const gridObj: Record<string, GridItem['type']> = {};
         if (data.grid) {
           data.grid.forEach((item: GridItem) => {
@@ -117,22 +97,6 @@ export function useRoomLayout({
       return false;
     }
 
-    const rawUrl = supabaseUrl.trim() || supabaseConfig.getUrl();
-    const finalSupabaseUrl = cleanSupabaseUrl(rawUrl);
-    const finalSupabaseAnonKey = supabaseAnonKey.trim() || supabaseConfig.getKey();
-
-    if (!finalSupabaseUrl || !finalSupabaseAnonKey) {
-      addToast('error', 'Supabase URL と Anon Key を設定してから保存してください');
-      return false;
-    }
-    try {
-      const parsedUrl = new URL(finalSupabaseUrl);
-      if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) throw new Error();
-    } catch {
-      addToast('error', 'Supabase URL には有効な HTTPS URL を指定してください');
-      return false;
-    }
-
     setIsSaving(true);
     
     const gridItems: GridItem[] = Object.entries(cases[0].grid).map(([coord, type]) => {
@@ -151,8 +115,6 @@ export function useRoomLayout({
           json: {
             name: roomName,
             grid: gridItems,
-            supabaseUrl: finalSupabaseUrl,
-            supabaseAnonKey: finalSupabaseAnonKey,
             isActive: isActive,
           },
         });
@@ -175,8 +137,6 @@ export function useRoomLayout({
           json: {
             name: roomName,
             grid: gridItems,
-            supabaseUrl: finalSupabaseUrl,
-            supabaseAnonKey: finalSupabaseAnonKey,
             isActive: isActive,
           },
         });
@@ -274,17 +234,15 @@ export function useRoomLayout({
     });
   };
 
-  const deleteClassroom = async (id: string, sbUrl?: string, sbKey?: string) => {
+  const deleteClassroom = async (id: string) => {
     if (!window.confirm('この講義室を完全に削除しますか？（この操作は取り消せません）')) {
       return;
     }
 
     // 1. Properly notify students by sending a teacher_reset broadcast before deletion
-    const finalSbUrl = sbUrl || supabaseUrl;
-    const finalSbKey = sbKey || supabaseAnonKey;
-    if (finalSbUrl && finalSbKey) {
+    const sb = createEnvironmentSupabaseClient();
+    if (sb) {
       try {
-        const sb = createClient(finalSbUrl, finalSbKey);
         const channel = await createAuthorizedPrivateChannel(sb, teacherAuth.getSupabaseToken(), `room:${id}`);
         channel.subscribe(async (status) => {
           if (status === 'SUBSCRIBED') {

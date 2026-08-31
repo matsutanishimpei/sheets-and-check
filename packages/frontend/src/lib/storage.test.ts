@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { teacherAuth, supabaseConfig, activeRoom, studentSession, clearLegacyResponseData } from './storage';
+import { teacherAuth, activeRoom, studentSession, clearLegacyResponseData } from './storage';
 
 describe('Storage Layer Abstraction', () => {
   beforeEach(() => {
@@ -38,17 +38,6 @@ describe('Storage Layer Abstraction', () => {
       expect(teacherAuth.getJwt()).toBeNull();
       expect(teacherAuth.getSupabaseToken()).toBe('');
       expect(teacherAuth.getLoggedInTeacher()).toBeNull();
-    });
-  });
-
-  describe('supabaseConfig helper', () => {
-    it('should correctly store and read supabase connection options', () => {
-      expect(supabaseConfig.getUrl()).toBe('');
-      expect(supabaseConfig.getKey()).toBe('');
-
-      supabaseConfig.save('https://my-project.supabase.co', 'anon-key-abc');
-      expect(supabaseConfig.getUrl()).toBe('https://my-project.supabase.co');
-      expect(supabaseConfig.getKey()).toBe('anon-key-abc');
     });
   });
 

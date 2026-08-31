@@ -21,12 +21,12 @@ flowchart TD
 - TeacherとStudentは、カスタムJWTを `realtime.setAuth()` へ設定してから `private: true` のChannelへ参加します。
 - Teacherは `room:<roomId>` から `teacher_reset`、`student_evicted`、`teacher_lock_state`、`room_layout_updated` を送ります。
 - Student回答はSupabaseへ直接Broadcastしません。`POST /api/rooms/:id/student-event` がStudent JWTを検証し、JWT claim由来の `studentId` / `name` を付与して `room:<roomId>:teacher` へ中継します。本文中の本人情報は信用しません。
-- productionのRoom POST/PUTでは、前後空白と任意個の末尾 `/` を除去した `supabaseUrl` がWorkerの `SUPABASE_URL` と一致しなければ保存しません。`SUPABASE_URL` 未設定時もfail closedです。
+- Teacher/StudentブラウザはPagesの `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`、Worker relayはWorkerの `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` を使用します。Room APIやlocalStorageにはSupabase接続情報を保存しません。
 - Supabase側では [`supabase/migrations/202608300001_realtime_authorization.sql`](./supabase/migrations/202608300001_realtime_authorization.sql) の適用、`realtime.messages` のRLS Policy、Realtime Settingsの **Allow public access OFF** が必須です。
 
 ## データ保持
 
-D1へ永続化するのはRoom、座席レイアウト、Roomの接続設定・受付状態、Teacherアカウントです。Studentの最新回答・コメント・Teacher受信時刻はTeacherブラウザのメモリ上だけで扱います。
+D1へ永続化するのはRoom、座席レイアウト、受付状態、Teacherアカウントです。旧Supabase接続情報の列は互換性のため残しますが、アプリケーションから読み書きしません。Studentの最新回答・コメント・Teacher受信時刻はTeacherブラウザのメモリ上だけで扱います。
 
 回答ログを恒久的にD1へ保存せず、質問別履歴、日別アーカイブ、CSV履歴エクスポートも現行機能ではありません。ページ更新、Room変更、回答リセット、ブラウザ終了等によりRealtime回答状態は失われ得ます。
 
@@ -50,13 +50,13 @@ npm run dev:frontend
 ## 画面
 
 - `/`: Teacherログイン
-- `/room_layout`: Room・座席レイアウト・Supabase公開接続情報の管理
+- `/room_layout`: Room・座席レイアウトの管理
 - `/seats/monitoring`: 最新回答、受付ON/OFF、reset、seat lock、evictionの監視操作
 - `/student/monitoring`: 現在の着席状態
 - `/user/teacher`: Teacherアカウント管理
 - `/student/:roomId`: Studentチェックイン、座席選択、回答
 
-Room画面へ入力するProject URLとanon keyは、運用者が用意した単一Projectのものを使用します。`service_role` keyをブラウザへ入力したりD1へ保存したりしてはいけません。
+Project URLと公開anon keyはPagesのビルド環境変数に設定します。`service_role` keyをブラウザへ公開したりD1へ保存したりしてはいけません。
 
 ## 無料構成
 

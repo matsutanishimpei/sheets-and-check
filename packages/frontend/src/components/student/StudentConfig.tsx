@@ -36,7 +36,7 @@ export const StudentConfig: React.FC<StudentConfigProps> = React.memo(({
       {!supabase && (
         <div style={{ display: 'flex', gap: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.85rem', color: 'var(--color-obstacle)' }}>
           <AlertTriangle size={20} style={{ flexShrink: 0 }} />
-          <span>Supabase 接続設定が完了していません。教員画面に切り替えて接続設定（URL & Anon Key）を入力してください。</span>
+          <span>Realtime 接続を開始できません。システム管理者に接続環境を確認してください。</span>
         </div>
       )}
 

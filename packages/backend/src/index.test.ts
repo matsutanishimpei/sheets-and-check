@@ -26,8 +26,6 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
         id: 'test-room-uuid-1',
         name: '物理実験室',
         grid: [{ x: 1, y: 1, type: 'student' }],
-        supabaseUrl: 'https://test-sb-1.supabase.co',
-        supabaseAnonKey: 'test-sb-key-1',
         isActive: true,
       }
     ]);
@@ -64,8 +62,6 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       const payload = JSON.stringify({
         name: 'Unauthorized room',
         grid: [],
-        supabaseUrl: 'https://example.supabase.co',
-        supabaseAnonKey: 'anon-key',
       });
       const requests = [
         testApp.request('/api/rooms'),
@@ -107,7 +103,8 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     const body: any = await res.json();
     expect(body.name).toBe('物理実験室');
     expect(body.grid).toEqual([{ x: 1, y: 1, type: 'student' }]);
-    expect(body.supabaseUrl).toBe('https://test-sb-1.supabase.co');
+    expect(body).not.toHaveProperty('supabaseUrl');
+    expect(body).not.toHaveProperty('supabaseAnonKey');
   });
 
   it('GET /api/rooms/:id - should return 404 for non-existing uuid', async () => {
@@ -121,8 +118,6 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     const newRoomPayload = {
       name: '化学講義室',
       grid: [{ x: 2, y: 2, type: 'student' }, { x: 0, y: 0, type: 'teacher' }],
-      supabaseUrl: 'https://test-sb-2.supabase.co',
-      supabaseAnonKey: 'test-sb-key-2',
       isActive: true,
     };
 
@@ -151,8 +146,6 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
     const updatedPayload = {
       name: '更新された物理実験室',
       grid: [{ x: 3, y: 3, type: 'student' }],
-      supabaseUrl: 'https://updated-sb.supabase.co',
-      supabaseAnonKey: 'updated-sb-key',
       isActive: false,
     };
 
@@ -365,8 +358,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(relayBody).toMatchObject({ studentId: 'STU001', studentName: 'Claim Name' });
     });
 
-    it('normalizes repeated trailing slashes for Room comparison and relay URL generation', async () => {
-      mockRepo.roomsTable[0].supabaseUrl = '  https://test-sb-1.supabase.co///  ';
+    it('normalizes repeated trailing slashes in the fixed Worker relay URL', async () => {
       const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 202 }));
       const token = await studentToken();
       const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
@@ -419,14 +411,14 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(String(diagnostic.response)).not.toContain(relayEnv.SUPABASE_SERVICE_ROLE_KEY);
     });
 
-    it('fails closed with CFG-SB-01 without logging configured URLs or credentials', async () => {
+    it('fails closed with CFG-SB-01 when the fixed Worker relay configuration is missing', async () => {
       const token = await studentToken();
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const response = await testApp.request('/api/rooms/test-room-uuid-1/student-event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ seatId: '1,1', status: 'ok' }),
-      }, { ...relayEnv, SUPABASE_URL: 'https://different-project.supabase.co' });
+      }, { SUPABASE_JWT_SECRET: relayEnv.SUPABASE_JWT_SECRET });
 
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({
@@ -510,26 +502,22 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
 
   describe('Production fail-closed behavior', () => {
     const productionJwtSecret = 'production-test-app-jwt-secret-not-default';
-    const configuredSupabaseUrl = 'https://test-sb-1.supabase.co';
-    const productionEnv = (supabaseUrl: string | null = configuredSupabaseUrl) => ({
+    const productionEnv = () => ({
       ENVIRONMENT: 'production',
       JWT_SECRET: productionJwtSecret,
-      ...(supabaseUrl === null ? {} : { SUPABASE_URL: supabaseUrl }),
     });
     const productionTeacherAuthorization = () => teacherAuthorization({}, productionJwtSecret);
-    const roomPayload = (supabaseUrl: string) => ({
+    const roomPayload = () => ({
       name: 'Production room',
       grid: [{ x: 2, y: 2, type: 'student' }],
-      supabaseUrl,
-      supabaseAnonKey: 'production-anon-key',
       isActive: true,
     });
 
-    it('creates a Room when its Supabase URL matches the production Worker project', async () => {
+    it('creates a Room without accepting Supabase settings from the frontend', async () => {
       const response = await testApp.request('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify(roomPayload(configuredSupabaseUrl)),
+        body: JSON.stringify(roomPayload()),
       }, productionEnv());
 
       expect(response.status).toBe(201);
@@ -537,53 +525,27 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       expect(mockRepo.roomsTable.some((room) => room.name === 'Production room')).toBe(true);
     });
 
-    it('rejects Room creation for a different Supabase project without changing the Repository', async () => {
+    it('rejects legacy Supabase fields on Room creation without changing the Repository', async () => {
       const before = structuredClone(mockRepo.roomsTable);
       const response = await testApp.request('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify(roomPayload('https://different-project.supabase.co')),
+        body: JSON.stringify({ ...roomPayload(), supabaseUrl: 'https://different-project.supabase.co', supabaseAnonKey: 'legacy-key' }),
       }, productionEnv());
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid', code: 'CFG-SB-01' });
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
-    it('rejects Room updates for a different Supabase project without changing the Repository', async () => {
+    it('rejects legacy Supabase fields on Room updates without changing the Repository', async () => {
       const before = structuredClone(mockRepo.roomsTable);
       const response = await testApp.request('/api/rooms/test-room-uuid-1', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify({ ...roomPayload('https://different-project.supabase.co'), name: 'Rejected update' }),
+        body: JSON.stringify({ ...roomPayload(), name: 'Rejected update', supabaseUrl: 'https://different-project.supabase.co', supabaseAnonKey: 'legacy-key' }),
       }, productionEnv());
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ error: 'Room Supabase configuration is invalid', code: 'CFG-SB-01' });
-      expect(mockRepo.roomsTable).toEqual(before);
-    });
-
-    it('allows repeated trailing slash differences for the same production Supabase project', async () => {
-      const response = await testApp.request('/api/rooms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify(roomPayload(`${configuredSupabaseUrl}///`)),
-      }, productionEnv(`${configuredSupabaseUrl}/`));
-
-      expect(response.status).toBe(201);
-      expect(mockRepo.roomsTable.some((room) => room.supabaseUrl === `${configuredSupabaseUrl}///`)).toBe(true);
-    });
-
-    it('fails closed when production SUPABASE_URL is absent without changing the Repository', async () => {
-      const before = structuredClone(mockRepo.roomsTable);
-      const response = await testApp.request('/api/rooms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...await productionTeacherAuthorization() },
-        body: JSON.stringify(roomPayload(configuredSupabaseUrl)),
-      }, productionEnv(null));
-
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: 'Room storage is unavailable', code: 'CFG-SB-01' });
       expect(mockRepo.roomsTable).toEqual(before);
     });
 
@@ -631,7 +593,7 @@ describe('Backend API (Dependency Injection & Repository Pattern) Tests', () => 
       const response = await testApp.request('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...await teacherAuthorization() },
-        body: JSON.stringify({ name: 'x'.repeat(70_000), grid: [], supabaseUrl: 'https://example.supabase.co', supabaseAnonKey: 'key' }),
+        body: JSON.stringify({ name: 'x'.repeat(70_000), grid: [] }),
       });
       expect(response.status).toBe(413);
     });

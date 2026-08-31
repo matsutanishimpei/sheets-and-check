@@ -7,8 +7,6 @@ export class InMemoryRoomRepository implements IRoomRepository {
     return this.roomsTable.map(r => ({
       id: r.id,
       name: r.name,
-      supabaseUrl: r.supabaseUrl,
-      supabaseAnonKey: r.supabaseAnonKey,
       isActive: r.isActive,
     }));
   }

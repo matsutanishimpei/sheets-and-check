@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 import { 
   DndContext, 
   useDraggable, 
@@ -9,18 +9,12 @@ import {
   GraduationCap, 
   XCircle, 
   DoorOpen, 
-  Database, 
-  Sliders, 
-  Layers, 
-  ArrowRight, 
   Plus, 
   Trash2, 
   FolderOpen, 
   RefreshCw, 
-  Activity,
   Lightbulb
 } from 'lucide-react';
-import { SupabaseClient } from '@supabase/supabase-js';
 import { GridItem, LiveSeatStatus, RealtimeLog } from '@my-app/shared';
 import { SeatMap } from '../components/SeatMap';
 import { ControlPanel } from '../components/ControlPanel';
@@ -28,8 +22,6 @@ import { ControlPanel } from '../components/ControlPanel';
 interface SavedRoom {
   id: string;
   name: string;
-  supabaseUrl?: string;
-  supabaseAnonKey?: string;
 }
 
 interface EditorCase {
@@ -38,12 +30,6 @@ interface EditorCase {
 }
 
 interface TeacherViewProps {
-  supabase: SupabaseClient | null;
-  supabaseUrl: string;
-  setSupabaseUrl: (url: string) => void;
-  supabaseAnonKey: string;
-  setSupabaseAnonKey: (key: string) => void;
-  onSaveSupabaseConfig: () => void;
   roomName: string;
   setRoomName: (name: string) => void;
   onCreateNewSession: () => void;
@@ -64,7 +50,7 @@ interface TeacherViewProps {
   onClearGrid: () => void;
   onBulkReset: () => void;
   onSaveClassroom: () => void;
-  onDeleteClassroom: (id: string, supabaseUrl?: string, supabaseAnonKey?: string) => void;
+  onDeleteClassroom: (id: string) => void;
   isSaving: boolean;
   onDragEnd: (event: DragEndEvent) => void;
   onCellCycle: (x: number, y: number) => void;
@@ -121,12 +107,6 @@ function DraggablePaletteItem({
 }
 
 export const TeacherView: React.FC<TeacherViewProps> = React.memo(({
-  supabase,
-  supabaseUrl,
-  setSupabaseUrl,
-  supabaseAnonKey,
-  setSupabaseAnonKey,
-  onSaveSupabaseConfig,
   roomName,
   setRoomName,
   onCreateNewSession,
@@ -287,7 +267,7 @@ export const TeacherView: React.FC<TeacherViewProps> = React.memo(({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onDeleteClassroom(room.id, room.supabaseUrl, room.supabaseAnonKey);
+                        onDeleteClassroom(room.id);
                       }}
                       style={{
                         background: 'none',

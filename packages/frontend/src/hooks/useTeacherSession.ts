@@ -6,7 +6,7 @@ import { useSupabaseClient } from './useSupabaseClient';
 import { useTeacherRealtime } from './useTeacherRealtime';
 import { GridItem, LiveSeatStatus } from '@my-app/shared';
 import { useToast } from '../contexts/ToastContext';
-import { supabaseConfig, teacherAuth, activeRoom } from '../lib/storage';
+import { teacherAuth, activeRoom } from '../lib/storage';
 
 /**
  * Facade hook that combines useRoomLayout + useSeatManager + useRealtimeSession
@@ -20,26 +20,12 @@ export function useTeacherSession() {
 
   const [teacherToken] = useState(() => teacherAuth.getSupabaseToken());
 
-  // ── Supabase credentials (lifted to this level as single source of truth) ──
-  const [initialUrl] = useState(() => supabaseConfig.getUrl() || '');
-  const [initialKey] = useState(() => supabaseConfig.getKey() || '');
-
-  const supabaseClient = useSupabaseClient(
-    initialUrl,
-    initialKey,
-    teacherToken
-  );
-  
-  const { supabaseUrl, setSupabaseUrl, supabaseAnonKey, setSupabaseAnonKey, supabase, saveSupabaseConfig } = supabaseClient;
+  const { supabase } = useSupabaseClient(teacherToken);
 
   // ── Room layout management ──
   const roomLayout = useRoomLayout({
     addToast,
     onClearLiveStatuses: () => seatManager.setLiveStatuses({} as Record<string, LiveSeatStatus>),
-    supabaseUrl,
-    supabaseAnonKey,
-    setSupabaseUrl,
-    setSupabaseAnonKey,
   });
 
   // ── Seat status management ──
@@ -124,29 +110,8 @@ export function useTeacherSession() {
     return saved;
   }, [roomLayout.saveClassroom, realtimeSession.sendRoomLayoutUpdatedBroadcast]);
 
-  const handleSaveSupabaseConfig = useCallback(async () => {
-    saveSupabaseConfig(
-      (msg) => {
-        addToast('success', msg);
-        if (!roomLayout.roomId) {
-          addToast('success', '右上の「D1 に保存」で教室を新規登録してください。');
-        }
-      },
-      (msg) => addToast('error', msg)
-    );
-    if (roomLayout.roomId) {
-      await handleSaveClassroom();
-    }
-  }, [saveSupabaseConfig, roomLayout.roomId, handleSaveClassroom, addToast]);
-
   return {
-    // Supabase config
-    supabaseUrl,
-    setSupabaseUrl,
-    supabaseAnonKey,
-    setSupabaseAnonKey,
     supabase,
-    saveSupabaseConfig: handleSaveSupabaseConfig,
 
     // Room layout
     roomName: roomLayout.roomName,

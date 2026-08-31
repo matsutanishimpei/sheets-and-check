@@ -11,25 +11,26 @@ export class DrizzleRoomRepository implements IRoomRepository {
       .select({
         id: schema.rooms.id,
         name: schema.rooms.name,
-        supabaseUrl: schema.rooms.supabaseUrl,
-        supabaseAnonKey: schema.rooms.supabaseAnonKey,
         isActive: schema.rooms.isActive,
       })
       .from(schema.rooms)
       .all();
 
-    return results.map((r: { id: string; name: string; supabaseUrl: string | null; supabaseAnonKey: string | null; isActive: number | null }) => ({
+    return results.map((r: { id: string; name: string; isActive: number | null }) => ({
       id: r.id,
       name: r.name,
-      supabaseUrl: r.supabaseUrl,
-      supabaseAnonKey: r.supabaseAnonKey,
       isActive: r.isActive !== 0,
     }));
   }
 
   async findById(id: string): Promise<RoomLayout | null> {
     const results = await this.db
-      .select()
+      .select({
+        id: schema.rooms.id,
+        name: schema.rooms.name,
+        layoutData: schema.rooms.layoutData,
+        isActive: schema.rooms.isActive,
+      })
       .from(schema.rooms)
       .where(eq(schema.rooms.id, id))
       .all();
@@ -41,8 +42,6 @@ export class DrizzleRoomRepository implements IRoomRepository {
       id: r.id,
       name: r.name,
       grid: JSON.parse(r.layoutData || '[]'),
-      supabaseUrl: r.supabaseUrl,
-      supabaseAnonKey: r.supabaseAnonKey,
       isActive: r.isActive !== 0,
     };
   }
@@ -54,8 +53,6 @@ export class DrizzleRoomRepository implements IRoomRepository {
         id: room.id,
         name: room.name,
         layoutData: JSON.stringify(room.grid),
-        supabaseUrl: room.supabaseUrl,
-        supabaseAnonKey: room.supabaseAnonKey,
         isActive: room.isActive ? 1 : 0,
       })
       .run();
@@ -67,8 +64,6 @@ export class DrizzleRoomRepository implements IRoomRepository {
       .set({
         name: room.name,
         layoutData: JSON.stringify(room.grid),
-        supabaseUrl: room.supabaseUrl,
-        supabaseAnonKey: room.supabaseAnonKey,
         isActive: room.isActive ? 1 : 0,
       })
       .where(eq(schema.rooms.id, id))

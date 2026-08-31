@@ -14,8 +14,6 @@ describe('Shared Package Schemas Validation', () => {
           { x: 2, y: 1, type: 'obstacle' },
           { x: 3, y: 3, type: 'door' },
         ],
-        supabaseUrl: 'https://example.supabase.co',
-        supabaseAnonKey: 'valid-anon-key-12345',
         isActive: true,
       };
 
@@ -27,8 +25,6 @@ describe('Shared Package Schemas Validation', () => {
       const invalidData = {
         name: '',
         grid: [],
-        supabaseUrl: 'https://example.supabase.co',
-        supabaseAnonKey: 'valid-anon-key-12345',
       };
 
       const result = SaveRoomLayoutInputSchema.safeParse(invalidData);
@@ -42,8 +38,6 @@ describe('Shared Package Schemas Validation', () => {
       const invalidData = {
         name: 'Classroom A',
         grid: [{ x: -1, y: 0, type: 'student' }],
-        supabaseUrl: 'https://example.supabase.co',
-        supabaseAnonKey: 'valid-anon-key',
       };
 
       const result = SaveRoomLayoutInputSchema.safeParse(invalidData);
@@ -143,17 +137,24 @@ describe('Shared Package Schemas Validation', () => {
   });
 
   describe('Room layout security bounds', () => {
-    const base = { name: 'Room', grid: [], supabaseUrl: 'https://example.supabase.co', supabaseAnonKey: 'key' };
+    const base = { name: 'Room', grid: [] };
 
     it('rejects duplicate and out-of-range coordinates', () => {
       expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: [{ x: 1, y: 1, type: 'student' }, { x: 1, y: 1, type: 'teacher' }] }).success).toBe(false);
       expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: [{ x: 12, y: 0, type: 'student' }] }).success).toBe(false);
     });
 
-    it('rejects excessive room names, grids, and non-HTTPS URLs', () => {
+    it('rejects excessive room names and grids', () => {
       expect(SaveRoomLayoutInputSchema.safeParse({ ...base, name: 'x'.repeat(101) }).success).toBe(false);
       expect(SaveRoomLayoutInputSchema.safeParse({ ...base, grid: Array.from({ length: 145 }, (_, i) => ({ x: i % 12, y: Math.floor(i / 12), type: 'student' })) }).success).toBe(false);
-      expect(SaveRoomLayoutInputSchema.safeParse({ ...base, supabaseUrl: 'http://example.supabase.co' }).success).toBe(false);
+    });
+
+    it('rejects legacy Supabase connection fields', () => {
+      expect(SaveRoomLayoutInputSchema.safeParse({
+        ...base,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'legacy-key',
+      }).success).toBe(false);
     });
   });
 });

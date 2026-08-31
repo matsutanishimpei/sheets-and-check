@@ -26,15 +26,10 @@ mocks.roomLayout.saveClassroom = mocks.saveClassroom;
 vi.mock('../contexts/ToastContext', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
 vi.mock('../lib/storage', () => ({
   teacherAuth: { getSupabaseToken: () => 'teacher-token' },
-  supabaseConfig: { getUrl: () => 'https://test.supabase.co', getKey: () => 'anon-key' },
   activeRoom: { getId: () => null },
 }));
 vi.mock('./useSupabaseClient', () => ({
-  useSupabaseClient: () => ({
-    supabaseUrl: 'https://test.supabase.co', setSupabaseUrl: vi.fn(),
-    supabaseAnonKey: 'anon-key', setSupabaseAnonKey: vi.fn(),
-    supabase: {}, saveSupabaseConfig: vi.fn(),
-  }),
+  useSupabaseClient: () => ({ supabase: {} }),
 }));
 vi.mock('./useRoomLayout', () => ({ useRoomLayout: () => mocks.roomLayout }));
 vi.mock('./useSeatManager', () => ({ useSeatManager: () => mocks.seatManager }));

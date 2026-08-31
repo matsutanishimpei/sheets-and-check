@@ -49,16 +49,6 @@ const isProduction = (env?: Bindings) => env?.ENVIRONMENT !== 'development' && e
 
 const normalizeSupabaseUrl = (url: string) => url.trim().replace(/\/+$/, '');
 
-const validateRoomSupabaseProject = (env: Bindings | undefined, roomSupabaseUrl: string) => {
-  if (!isProduction(env)) return null;
-  const configuredUrl = env?.SUPABASE_URL?.trim();
-  if (!configuredUrl) return { status: 503 as const, error: 'Room storage is unavailable', code: ERROR_CODES.supabaseConfig };
-  if (normalizeSupabaseUrl(configuredUrl) !== normalizeSupabaseUrl(roomSupabaseUrl)) {
-    return { status: 400 as const, error: 'Room Supabase configuration is invalid', code: ERROR_CODES.supabaseConfig };
-  }
-  return null;
-};
-
 const redactDiagnosticText = (value: string) => value
   .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
   .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED_JWT]')
@@ -196,7 +186,7 @@ const routes = app
     try {
       const room = await c.get('roomRepo').findById(c.req.param('id'));
       if (!room) return c.json({ error: 'Room not found' }, 404);
-      return c.json({ id: room.id, name: room.name, grid: room.grid, isActive: room.isActive, supabaseUrl: room.supabaseUrl || '', supabaseAnonKey: room.supabaseAnonKey || '' });
+      return c.json({ id: room.id, name: room.name, grid: room.grid, isActive: room.isActive });
     } catch (err) {
       return internalError(c, 'Internal Server Error', err);
     }
@@ -238,9 +228,8 @@ const routes = app
       const room = await c.get('roomRepo').findById(roomId);
       if (!room || !room.isActive) return c.json({ error: 'Forbidden' }, 403);
       const configuredUrl = c.env?.SUPABASE_URL ? normalizeSupabaseUrl(c.env.SUPABASE_URL) : '';
-      const roomUrl = room.supabaseUrl ? normalizeSupabaseUrl(room.supabaseUrl) : '';
       const serviceKey = c.env?.SUPABASE_SERVICE_ROLE_KEY?.trim();
-      if (!configuredUrl || !serviceKey || configuredUrl !== roomUrl) {
+      if (!configuredUrl || !serviceKey) {
         console.error(`[${ERROR_CODES.supabaseConfig}] Supabase relay configuration is unavailable`, {
           errorCode: ERROR_CODES.supabaseConfig,
           operation: 'student-event-relay-configuration',
@@ -296,8 +285,7 @@ const routes = app
 
   .get('/api/rooms', requireTeacher, async (c) => {
     try {
-      const rooms = (await c.get('roomRepo').listAll()).map((room) => ({ ...room, supabaseUrl: room.supabaseUrl || '', supabaseAnonKey: room.supabaseAnonKey || '' }));
-      return c.json({ rooms });
+      return c.json({ rooms: await c.get('roomRepo').listAll() });
     } catch (err) {
       return internalError(c, 'Failed to fetch rooms', err);
     }
@@ -306,18 +294,8 @@ const routes = app
   .post('/api/rooms', requireTeacher, enforceRoomPayloadLimit, zValidator('json', SaveRoomLayoutInputSchema), async (c) => {
     const body = c.req.valid('json');
     const id = crypto.randomUUID();
-    const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
-    if (configurationError) {
-      console.error(`[${configurationError.code}] Room Supabase configuration rejected`, {
-        errorCode: configurationError.code,
-        operation: 'create-room',
-        roomId: id,
-        status: configurationError.status,
-      });
-      return c.json({ error: configurationError.error, code: configurationError.code }, configurationError.status);
-    }
     try {
-      await c.get('roomRepo').create({ id, name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
+      await c.get('roomRepo').create({ id, name: body.name, grid: body.grid, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false }, 201);
     } catch (err) {
       return internalError(c, 'Failed to create room', err);
@@ -329,17 +307,7 @@ const routes = app
     const body = c.req.valid('json');
     try {
       if (!(await c.get('roomRepo').exists(id))) return c.json({ error: 'Room not found' }, 404);
-      const configurationError = validateRoomSupabaseProject(c.env, body.supabaseUrl);
-      if (configurationError) {
-        console.error(`[${configurationError.code}] Room Supabase configuration rejected`, {
-          errorCode: configurationError.code,
-          operation: 'update-room',
-          roomId: id,
-          status: configurationError.status,
-        });
-        return c.json({ error: configurationError.error, code: configurationError.code }, configurationError.status);
-      }
-      await c.get('roomRepo').update(id, { name: body.name, grid: body.grid, supabaseUrl: body.supabaseUrl, supabaseAnonKey: body.supabaseAnonKey, isActive: body.isActive !== false });
+      await c.get('roomRepo').update(id, { name: body.name, grid: body.grid, isActive: body.isActive !== false });
       return c.json({ id, ...body, isActive: body.isActive !== false });
     } catch (err) {
       return internalError(c, 'Failed to update room', err);
